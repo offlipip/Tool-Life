@@ -1164,6 +1164,19 @@ export default function App() {
     return null;
   }
 
+  // O OCR local pode "achar" que leu certo mesmo quando pulou um pedaço
+  // do número (ex: ler "30" em vez de "2030"). Como o desgaste só sobe
+  // aos pouquinhos entre uma foto e outra, um salto grande demais é
+  // sinal de leitura quebrada — força conferência mesmo que o Tesseract
+  // tenha reportado confiança alta.
+  function isImplausibleJump(oldVal, newVal) {
+    const o = parseFloat(oldVal);
+    const n = parseFloat(newVal);
+    if (isNaN(o) || isNaN(n)) return false;
+    if (n === 0 || o === 0) return false; // reset de ferramenta trocada, ou ainda sem histórico
+    return Math.abs(n - o) > Math.max(30, o * 0.5);
+  }
+
   async function handleFileChange(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -1186,16 +1199,32 @@ export default function App() {
         const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
         const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
         const limiteReading = limiteNum !== null ? readingByNum[limiteNum] : undefined;
+
+        let vidaAtualConfidence = atualReading ? atualReading.confidence : 'missing';
+        if (atualReading && isImplausibleJump(t.vidaAtual, atualReading.value)) {
+          vidaAtualConfidence = 'low';
+        }
+
+        let vidaUtilConfidence = limiteReading ? limiteReading.confidence : 'missing';
+        if (limiteReading && !t.isRoutine) {
+          const oldVU = parseFloat(t.vidaUtil);
+          if (!isNaN(oldVU) && oldVU > 0 && Math.abs(limiteReading.value - oldVU) > 0.01) {
+            // vida útil quase nunca muda depois de cadastrada — qualquer
+            // diferença aqui merece conferência, mesmo com confiança alta.
+            vidaUtilConfidence = 'low';
+          }
+        }
+
         return {
           toolId: t.id,
           slot: t.slot,
           isRoutine: t.isRoutine,
           oldVidaAtual: t.vidaAtual,
           newVidaAtual: atualReading ? String(atualReading.value) : '',
-          vidaAtualConfidence: atualReading ? atualReading.confidence : 'missing',
+          vidaAtualConfidence,
           oldVidaUtil: t.vidaUtil,
           newVidaUtil: limiteReading ? String(limiteReading.value) : '',
-          vidaUtilConfidence: limiteReading ? limiteReading.confidence : 'missing',
+          vidaUtilConfidence,
         };
       });
 

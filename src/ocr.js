@@ -24,11 +24,12 @@ function getWorker() {
 }
 
 /**
- * Redimensiona e prepara a foto (escala de cinza + esticar o contraste)
- * antes de mandar pro OCR. Isso ajuda bastante com reflexo de luz e
- * fotos meio escuras/desbotadas.
+ * Redimensiona e prepara a foto antes de mandar pro OCR: converte pra
+ * escala de cinza, estica o contraste, e depois binariza (preto/branco
+ * puro) usando o método de Otsu — ajuda a separar o texto de reflexo e
+ * sombra residual que a escala de cinza sozinha ainda deixa passar.
  */
-async function preprocess(file, maxDim = 1800) {
+async function preprocess(file, maxDim = 2000) {
   const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -59,22 +60,113 @@ async function preprocess(file, maxDim = 1800) {
 
   const imageData = ctx.getImageData(0, 0, w, h);
   const d = imageData.data;
+
+  // 1) tons de cinza + esticar contraste
   let min = 255;
   let max = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    d[i] = d[i + 1] = d[i + 2] = gray;
-    if (gray < min) min = gray;
-    if (gray > max) max = gray;
+  const gray = new Uint8ClampedArray(w * h);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    gray[p] = g;
+    if (g < min) min = g;
+    if (g > max) max = g;
   }
   const range = Math.max(1, max - min);
-  for (let i = 0; i < d.length; i += 4) {
-    const v = ((d[i] - min) / range) * 255;
+  const histogram = new Array(256).fill(0);
+  for (let p = 0; p < gray.length; p++) {
+    const v = Math.round(((gray[p] - min) / range) * 255);
+    gray[p] = v;
+    histogram[v]++;
+  }
+
+  // 2) binariza pelo método de Otsu — acha sozinho o ponto de corte
+  // entre "texto" e "fundo" a partir do histograma da própria foto,
+  // em vez de um limite fixo que funcionaria bem numa foto e mal noutra.
+  const threshold = otsuThreshold(histogram, gray.length);
+  for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+    const v = gray[p] > threshold ? 255 : 0;
     d[i] = d[i + 1] = d[i + 2] = v;
   }
-  ctx.putImageData(imageData, 0, 0);
 
+  ctx.putImageData(imageData, 0, 0);
   return canvas;
+}
+
+function otsuThreshold(histogram, total) {
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * histogram[i];
+  let sumB = 0;
+  let wB = 0;
+  let varMax = 0;
+  let threshold = 127;
+  for (let i = 0; i < 256; i++) {
+    wB += histogram[i];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += i * histogram[i];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > varMax) {
+      varMax = varBetween;
+      threshold = i;
+    }
+  }
+  return threshold;
+}
+
+function closeEnoughSameLine(a, b, maxGap) {
+  const gap = b.bbox.x0 - a.bbox.x1;
+  if (gap < 0 || gap > maxGap) return false;
+  const aH = a.bbox.y1 - a.bbox.y0;
+  const bH = b.bbox.y1 - b.bbox.y0;
+  const tol = Math.max(6, Math.min(aH, bH) * 0.6);
+  return Math.abs(((a.bbox.y0 + a.bbox.y1) / 2) - ((b.bbox.y0 + b.bbox.y1) / 2)) < tol;
+}
+
+/**
+ * Às vezes o Tesseract quebra um número em dois pedaços (ex: "2030."
+ * vira "20" + "30."). Todo valor nessa tela termina com ".", então dá
+ * pra usar isso como âncora: junta fragmentos vizinhos na mesma linha
+ * até achar o ponto final.
+ */
+function mergeAdjacentValueFragments(tokens) {
+  const sorted = [...tokens].sort((a, b) => {
+    const ay = (a.bbox.y0 + a.bbox.y1) / 2;
+    const by = (b.bbox.y0 + b.bbox.y1) / 2;
+    if (Math.abs(ay - by) > 8) return ay - by;
+    return a.bbox.x0 - b.bbox.x0;
+  });
+
+  const out = [];
+  let i = 0;
+  while (i < sorted.length) {
+    let cur = sorted[i];
+    i++;
+    if (!cur.text.startsWith('#')) {
+      while (
+        i < sorted.length &&
+        !cur.text.endsWith('.') &&
+        !sorted[i].text.startsWith('#') &&
+        /^\d+\.?$/.test(sorted[i].text) &&
+        closeEnoughSameLine(cur, sorted[i], 14)
+      ) {
+        const next = sorted[i];
+        cur = {
+          text: cur.text + next.text,
+          confidence: Math.min(cur.confidence, next.confidence),
+          bbox: {
+            x0: cur.bbox.x0, x1: next.bbox.x1,
+            y0: Math.min(cur.bbox.y0, next.bbox.y0), y1: Math.max(cur.bbox.y1, next.bbox.y1),
+          },
+        };
+        i++;
+      }
+    }
+    out.push(cur);
+  }
+  return out;
 }
 
 /**
@@ -111,8 +203,10 @@ function parseRows(words) {
     }
   }
 
-  const labels = merged.filter((w) => /^#\d{1,4}$/.test(w.text));
-  const values = merged.filter((w) => !w.text.startsWith('#') && /^\d{1,4}\.?\d*$/.test(w.text));
+  const fullyMerged = mergeAdjacentValueFragments(merged);
+
+  const labels = fullyMerged.filter((w) => /^#\d{1,4}$/.test(w.text));
+  const values = fullyMerged.filter((w) => !w.text.startsWith('#') && /^\d{1,4}\.?\d*$/.test(w.text));
 
   const yCenter = (w) => (w.bbox.y0 + w.bbox.y1) / 2;
   const rowHeight = (w) => Math.max(1, w.bbox.y1 - w.bbox.y0);
