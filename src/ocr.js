@@ -24,12 +24,16 @@ function getWorker() {
 }
 
 /**
- * Redimensiona e prepara a foto antes de mandar pro OCR: converte pra
- * escala de cinza, estica o contraste, e depois binariza (preto/branco
- * puro) usando o método de Otsu — ajuda a separar o texto de reflexo e
- * sombra residual que a escala de cinza sozinha ainda deixa passar.
+ * Redimensiona e prepara a foto (escala de cinza + esticar o contraste)
+ * antes de mandar pro OCR. Isso ajuda bastante com reflexo de luz e
+ * fotos meio escuras/desbotadas.
+ *
+ * (Chegamos a testar binarizar a imagem em preto/branco puro aqui, mas
+ * como as fotos do painel têm reflexo bem desigual de um lado a outro,
+ * um único corte de brilho pra imagem inteira piorou a leitura em vez
+ * de ajudar — voltamos pra só escala de cinza + contraste.)
  */
-async function preprocess(file, maxDim = 2000) {
+async function preprocess(file, maxDim = 1800) {
   const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -60,60 +64,22 @@ async function preprocess(file, maxDim = 2000) {
 
   const imageData = ctx.getImageData(0, 0, w, h);
   const d = imageData.data;
-
-  // 1) tons de cinza + esticar contraste
   let min = 255;
   let max = 0;
-  const gray = new Uint8ClampedArray(w * h);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    gray[p] = g;
-    if (g < min) min = g;
-    if (g > max) max = g;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = gray;
+    if (gray < min) min = gray;
+    if (gray > max) max = gray;
   }
   const range = Math.max(1, max - min);
-  const histogram = new Array(256).fill(0);
-  for (let p = 0; p < gray.length; p++) {
-    const v = Math.round(((gray[p] - min) / range) * 255);
-    gray[p] = v;
-    histogram[v]++;
-  }
-
-  // 2) binariza pelo método de Otsu — acha sozinho o ponto de corte
-  // entre "texto" e "fundo" a partir do histograma da própria foto,
-  // em vez de um limite fixo que funcionaria bem numa foto e mal noutra.
-  const threshold = otsuThreshold(histogram, gray.length);
-  for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
-    const v = gray[p] > threshold ? 255 : 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = ((d[i] - min) / range) * 255;
     d[i] = d[i + 1] = d[i + 2] = v;
   }
-
   ctx.putImageData(imageData, 0, 0);
-  return canvas;
-}
 
-function otsuThreshold(histogram, total) {
-  let sum = 0;
-  for (let i = 0; i < 256; i++) sum += i * histogram[i];
-  let sumB = 0;
-  let wB = 0;
-  let varMax = 0;
-  let threshold = 127;
-  for (let i = 0; i < 256; i++) {
-    wB += histogram[i];
-    if (wB === 0) continue;
-    const wF = total - wB;
-    if (wF === 0) break;
-    sumB += i * histogram[i];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const varBetween = wB * wF * (mB - mF) * (mB - mF);
-    if (varBetween > varMax) {
-      varMax = varBetween;
-      threshold = i;
-    }
-  }
-  return threshold;
+  return canvas;
 }
 
 function closeEnoughSameLine(a, b, maxGap) {
