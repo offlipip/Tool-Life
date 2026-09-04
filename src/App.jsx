@@ -49,9 +49,14 @@ function slotDigits(slot) {
   return m ? parseInt(m[0], 10) : null;
 }
 
-function slotToVarNum(slot) {
+function slotToAtualNum(slot) {
   const d = slotDigits(slot);
   return d === null ? null : 900 + d;
+}
+
+function slotToLimiteNum(slot) {
+  const d = slotDigits(slot);
+  return d === null ? null : 800 + d;
 }
 
 function computeRemaining(tool) {
@@ -183,6 +188,12 @@ function GaugeBar({ pct, color }) {
       <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 300ms ease' }} />
     </div>
   );
+}
+
+function dotStatusForConfidence(c) {
+  if (c === 'high') return 'ok';
+  if (c === 'low') return 'warning';
+  return 'routine'; // "missing" = não apareceu nessa foto, não é um erro
 }
 
 function StatusDot({ status }) {
@@ -853,7 +864,16 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
 
   React.useEffect(() => { setLocalRows(rows || []); }, [rows]);
 
-  const unclear = localRows.filter((r) => r.confidence !== 'high');
+  const lowConfidenceCount = localRows.reduce((n, r) => {
+    let c = 0;
+    if (r.vidaAtualConfidence === 'low') c++;
+    if (!r.isRoutine && r.vidaUtilConfidence === 'low') c++;
+    return n + c;
+  }, 0);
+
+  function patchRow(idx, field, value) {
+    setLocalRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
@@ -880,42 +900,61 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
               Não foi possível ler a foto{error ? ` (${error})` : ''}. Tente novamente com mais luz e sem tremer.
             </span>
             <button onClick={onRetake} className="flex items-center gap-1.5" style={{ background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              <Camera size={14} /> Tirar novamente
+              <Camera size={14} /> Tentar outra foto
             </button>
           </div>
         )}
 
         {status === 'review' && (
           <>
-            {unclear.length > 0 && (
+            <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 10 }}>
+              VU = vida útil (tela #800-849) · VA = vida atual (tela #900-949). Cada foto só preenche o que aparecer nela.
+            </div>
+
+            {lowConfidenceCount > 0 && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px', marginBottom: 12 }}>
                 <AlertTriangle size={15} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span style={{ fontSize: 12, color: C.text }}>
-                  {unclear.length} valor{unclear.length > 1 ? 'es' : ''} não ficou{unclear.length > 1 ? 'ram' : ''} claro{unclear.length > 1 ? 's' : ''}. Confira, digite manualmente ou repita a foto.
+                  {lowConfidenceCount} valor{lowConfidenceCount > 1 ? 'es' : ''} ficou{lowConfidenceCount > 1 ? 'ram' : ''} pouco nítido{lowConfidenceCount > 1 ? 's' : ''} na foto. Confira, digite manualmente ou repita a foto.
                 </span>
               </div>
             )}
 
             <div style={{ marginBottom: 14 }}>
               {localRows.map((row, idx) => (
-                <div key={row.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
-                  <div style={{ minWidth: 44 }}>
-                    <StatusDot status={row.confidence === 'high' ? 'ok' : row.confidence === 'missing' ? 'expired' : 'warning'} />
+                <div key={row.toolId} style={{ padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontFamily: MONO, fontSize: 13, color: C.text }}>{row.slot}</span>
+                    {row.isRoutine && <span style={{ fontSize: 10, color: C.textFaint }}>rotina</span>}
                   </div>
-                  <div style={{ minWidth: 52 }}>
-                    <div style={{ fontFamily: MONO, fontSize: 13, color: C.text }}>{row.slot}</div>
-                    <div style={{ fontFamily: MONO, fontSize: 10, color: C.textFaint }}>{fmtNum(row.oldValue)} antes</div>
+
+                  {!row.isRoutine && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                      <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
+                      <span style={{ fontSize: 10, color: C.textFaint, width: 18 }}>VU</span>
+                      <TextInput
+                        inputMode="decimal"
+                        value={row.newVidaUtil}
+                        placeholder="—"
+                        onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
+                        style={{ flex: 1, textAlign: 'right', padding: '5px 8px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
+                      />
+                      <span style={{ fontSize: 10, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaUtil)} antes</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
+                    <span style={{ fontSize: 10, color: C.textFaint, width: 18 }}>VA</span>
+                    <TextInput
+                      inputMode="decimal"
+                      value={row.newVidaAtual}
+                      placeholder="—"
+                      onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
+                      style={{ flex: 1, textAlign: 'right', padding: '5px 8px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
+                    />
+                    <span style={{ fontSize: 10, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaAtual)} antes</span>
                   </div>
-                  <TextInput
-                    inputMode="decimal"
-                    value={row.newValue}
-                    placeholder="digitar"
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setLocalRows((prev) => prev.map((r, i) => (i === idx ? { ...r, newValue: v } : r)));
-                    }}
-                    style={{ flex: 1, textAlign: 'right', borderColor: row.confidence === 'missing' ? C.crit : row.confidence === 'low' ? C.warn : C.border }}
-                  />
                 </div>
               ))}
             </div>
@@ -1064,15 +1103,21 @@ export default function App() {
       const readingByNum = {};
       readings.forEach((r) => { readingByNum[r.num] = r; });
 
-      const rows = found.operation.tools.filter((t) => !t.isRoutine).map((t) => {
-        const varNum = slotToVarNum(t.slot);
-        const reading = varNum !== null ? readingByNum[varNum] : undefined;
+      const rows = found.operation.tools.map((t) => {
+        const atualNum = slotToAtualNum(t.slot);
+        const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
+        const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
+        const limiteReading = limiteNum !== null ? readingByNum[limiteNum] : undefined;
         return {
           toolId: t.id,
           slot: t.slot,
-          oldValue: t.vidaAtual,
-          newValue: reading ? String(reading.value) : '',
-          confidence: reading ? reading.confidence : 'missing',
+          isRoutine: t.isRoutine,
+          oldVidaAtual: t.vidaAtual,
+          newVidaAtual: atualReading ? String(atualReading.value) : '',
+          vidaAtualConfidence: atualReading ? atualReading.confidence : 'missing',
+          oldVidaUtil: t.vidaUtil,
+          newVidaUtil: limiteReading ? String(limiteReading.value) : '',
+          vidaUtilConfidence: limiteReading ? limiteReading.confidence : 'missing',
         };
       });
 
@@ -1090,8 +1135,16 @@ export default function App() {
       ...o,
       tools: o.tools.map((t) => {
         const row = rows.find((r) => r.toolId === t.id);
-        if (!row || row.newValue === '' || isNaN(parseFloat(row.newValue))) return t;
-        return { ...t, vidaAtual: parseFloat(row.newValue), lastUpdated: new Date().toISOString() };
+        if (!row) return t;
+        const patch = {};
+        const va = parseFloat(row.newVidaAtual);
+        if (row.newVidaAtual !== '' && !isNaN(va)) patch.vidaAtual = va;
+        if (!t.isRoutine) {
+          const vu = parseFloat(row.newVidaUtil);
+          if (row.newVidaUtil !== '' && !isNaN(vu)) patch.vidaUtil = vu;
+        }
+        if (Object.keys(patch).length === 0) return t;
+        return { ...t, ...patch, lastUpdated: new Date().toISOString() };
       }),
     })));
     setOcrModal(null);
@@ -1168,7 +1221,7 @@ export default function App() {
         ))}
       </div>
 
-      <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFileChange} />
+      <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
 
       {ocrModal && <OcrModal state={ocrModal} onClose={() => setOcrModal(null)} onRetake={retakePhoto} onSave={saveOcrRows} />}
     </div>
