@@ -348,13 +348,79 @@ function ToolRow({ tool, onUpdate, onDelete }) {
   );
 }
 
+function LimitePhotoButton({ readings, onReady }) {
+  const [status, setStatus] = useState('idle'); // idle | loading | ready | error
+  const [count, setCount] = useState(0);
+  const [error, setError] = useState('');
+  const inputRef = useRef(null);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setStatus('loading');
+    setError('');
+    try {
+      const list = await readPanelPhoto(file);
+      const map = {};
+      list.forEach((r) => { map[r.num] = r; });
+      setCount(list.length);
+      setStatus('ready');
+      onReady(map);
+    } catch (err) {
+      setStatus('error');
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={status === 'loading'}
+        className="flex items-center gap-1.5 justify-center w-full"
+        style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: status === 'loading' ? 'default' : 'pointer' }}
+      >
+        {status === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+        {status === 'loading' ? 'Lendo tela de vida útil...' : (readings ? 'Trocar foto da tela de vida útil' : 'Ler vida útil de uma foto')}
+      </button>
+      {status === 'ready' && (
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>
+          {count} valor{count !== 1 ? 'es' : ''} lido{count !== 1 ? 's' : ''} da tela #800-849 — ao digitar o slot (ex: T03), a vida útil preenche sozinha.
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui ler essa foto{error ? ` (${error})` : ''}. Tente outra.</div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Add-tool inline form                                                   */
 /* ---------------------------------------------------------------------- */
 
-function NewToolForm({ onAdd, compact }) {
+function NewToolForm({ onAdd, compact, limiteReadings }) {
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: '', isRoutine: false };
   const [t, setT] = useState(blank);
+  const [vuFromPhoto, setVuFromPhoto] = useState(false);
+
+  // Se uma foto da tela de vida útil já foi lida (pelo botão acima, no
+  // pai), assim que o slot bate com um #80N conhecido, preenche sozinho.
+  // Só sobrescreve enquanto o valor ainda não foi editado à mão.
+  React.useEffect(() => {
+    if (!limiteReadings || t.isRoutine) return;
+    const num = slotToLimiteNum(t.slot);
+    if (num === null) return;
+    const reading = limiteReadings[num];
+    if (!reading) return;
+    if (t.vidaUtil === '' || vuFromPhoto) {
+      setT((prev) => (prev.vidaUtil === String(reading.value) ? prev : { ...prev, vidaUtil: String(reading.value) }));
+      setVuFromPhoto(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t.slot, t.isRoutine, limiteReadings]);
 
   function submit() {
     if (!t.slot.trim()) return;
@@ -369,6 +435,7 @@ function NewToolForm({ onAdd, compact }) {
       lastUpdated: null,
     });
     setT(blank);
+    setVuFromPhoto(false);
   }
 
   return (
@@ -388,7 +455,14 @@ function NewToolForm({ onAdd, compact }) {
       {!t.isRoutine && (
         <div className="flex gap-2 mb-2">
           <Field label="Vida útil">
-            <TextInput inputMode="decimal" value={t.vidaUtil} onChange={(e) => setT({ ...t, vidaUtil: e.target.value })} placeholder="480" />
+            <TextInput
+              inputMode="decimal"
+              value={t.vidaUtil}
+              onChange={(e) => { setT({ ...t, vidaUtil: e.target.value }); setVuFromPhoto(false); }}
+              placeholder="480"
+              style={{ borderColor: vuFromPhoto ? C.ok : undefined }}
+            />
+            {vuFromPhoto && <span style={{ fontSize: 10, color: C.ok }}>✓ lido da foto — confira</span>}
           </Field>
           <Field label="Desgaste / peça">
             <TextInput inputMode="decimal" value={t.desgastePeca} onChange={(e) => setT({ ...t, desgastePeca: e.target.value })} placeholder="1.5" />
@@ -423,6 +497,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
   const [nameDraft, setNameDraft] = useState(op.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddTool, setShowAddTool] = useState(false);
+  const [limiteReadings, setLimiteReadings] = useState(null);
 
   const active = op.tools.filter((t) => !t.isRoutine);
   const worst = active.map((t) => computeRemaining(t)).filter((r) => r !== null);
@@ -487,7 +562,8 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 
           {showAddTool && (
             <>
-              <NewToolForm compact onAdd={onAddTool} />
+              <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
+              <NewToolForm compact onAdd={onAddTool} limiteReadings={limiteReadings} />
               <button
                 onClick={() => setShowAddTool(false)}
                 className="flex items-center gap-1.5 justify-center mt-2 w-full"
@@ -510,6 +586,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 function AddOperationPanel({ onSave, onCancel }) {
   const [name, setName] = useState('');
   const [tools, setTools] = useState([]);
+  const [limiteReadings, setLimiteReadings] = useState(null);
 
   function addTool(tool) { setTools((prev) => [...prev, tool]); }
   function removeTool(id) { setTools((prev) => prev.filter((t) => t.id !== id)); }
@@ -539,7 +616,8 @@ function AddOperationPanel({ onSave, onCancel }) {
       )}
 
       <div style={{ marginTop: 10 }}>
-        <NewToolForm onAdd={addTool} />
+        <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
+        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} />
       </div>
 
       <div className="flex gap-2 mt-3">
