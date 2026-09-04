@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import {
   Plus, ChevronDown, ChevronRight, Camera, Pencil, Trash2, Check, X,
-  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy,
+  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock,
 } from 'lucide-react';
 import { readPanelPhoto } from './ocr.js';
 import { loadData, saveData } from './storage.js';
@@ -58,6 +58,19 @@ function slotToLimiteNum(slot) {
   const d = slotDigits(slot);
   return d === null ? null : 800 + d;
 }
+
+// Ordena por número do slot (T01, T02, T03...) em vez da ordem de
+// cadastro, que é como as ferramentas ficam mais fáceis de achar.
+function compareSlots(a, b) {
+  const da = slotDigits(a);
+  const db = slotDigits(b);
+  if (da !== null && db !== null && da !== db) return da - db;
+  return String(a || '').localeCompare(String(b || ''));
+}
+
+// Cadeado global: enquanto travado, tocar numa ferramenta não abre o
+// formulário de edição — só o botão de zerar (sempre disponível) funciona.
+const EditLockContext = React.createContext({ unlocked: false });
 
 function computeRemaining(tool) {
   if (tool.isRoutine) return null;
@@ -158,6 +171,12 @@ function TextInput(props) {
   return (
     <input
       {...props}
+      onFocus={(e) => {
+        props.onFocus?.(e);
+        // dá tempo do teclado abrir e o viewport encolher antes de rolar,
+        // senão calcula a posição errada e o campo fica atrás dele
+        setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
+      }}
       className="w-full"
       style={{
         background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: 6,
@@ -253,8 +272,10 @@ function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNa
 /* ---------------------------------------------------------------------- */
 
 function ToolRow({ tool, onUpdate, onDelete }) {
+  const { unlocked } = React.useContext(EditLockContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(tool);
+  const [confirmZero, setConfirmZero] = useState(false);
 
   const remaining = computeRemaining(tool);
   const status = statusFor(remaining);
@@ -314,10 +335,22 @@ function ToolRow({ tool, onUpdate, onDelete }) {
     );
   }
 
+  if (confirmZero) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, background: C.accentSoft }}>
+        <span style={{ fontSize: 12.5, color: C.text, flex: 1 }}>
+          Zerar {tool.isRoutine ? 'o contador' : 'a vida atual'} de <span style={{ fontFamily: MONO }}>{tool.slot}</span>?
+        </span>
+        <IconBtn onClick={() => setConfirmZero(false)}><X size={15} /></IconBtn>
+        <IconBtn onClick={() => { onUpdate({ vidaAtual: 0 }); setConfirmZero(false); }}><Check size={16} color={C.ok} /></IconBtn>
+      </div>
+    );
+  }
+
   return (
     <div
-      onClick={() => { setDraft(tool); setEditing(true); }}
-      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer' }}
+      onClick={() => { if (unlocked) { setDraft(tool); setEditing(true); } }}
+      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, cursor: unlocked ? 'pointer' : 'default' }}
     >
       <StatusDot status={status} />
       <div style={{ minWidth: 46 }}>
@@ -332,7 +365,7 @@ function ToolRow({ tool, onUpdate, onDelete }) {
           </span>
         </div>
       </div>
-      <div style={{ textAlign: 'right', minWidth: 56 }}>
+      <div style={{ textAlign: 'right', minWidth: 44 }}>
         {tool.isRoutine ? (
           <span style={{ fontSize: 10.5, color: C.textFaint }}>rotina</span>
         ) : (
@@ -344,6 +377,9 @@ function ToolRow({ tool, onUpdate, onDelete }) {
           </>
         )}
       </div>
+      <IconBtn title="Zerar" onClick={(e) => { e.stopPropagation(); setConfirmZero(true); }}>
+        <RotateCcw size={15} color={C.textFaint} />
+      </IconBtn>
     </div>
   );
 }
@@ -492,7 +528,7 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
 /* Operation card (nível 3 — dentro de uma máquina)                       */
 /* ---------------------------------------------------------------------- */
 
-function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusy }) {
+function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(op.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -531,17 +567,8 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
           <div className="flex gap-2 mb-3">
             <button
-              onClick={() => onPhoto(op.id)}
-              disabled={photoBusy}
-              className="flex items-center gap-1.5 justify-center"
-              style={{ flex: 1, background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: photoBusy ? 'default' : 'pointer' }}
-            >
-              {photoBusy ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-              {photoBusy ? 'Lendo painel...' : 'Atualizar com foto'}
-            </button>
-            <button
               onClick={() => setShowAddTool((s) => !s)}
-              className="flex items-center gap-1.5 justify-center"
+              className="flex items-center gap-1.5 justify-center w-full"
               style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}
             >
               <Plus size={14} /> Ferramenta
@@ -644,7 +671,7 @@ function AddOperationPanel({ onSave, onCancel }) {
 function MachineCard({
   machine, expanded, onToggle, onRename, onDelete,
   onAddOperation, onToggleOp, expandedOpId,
-  onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusyOpId,
+  onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusy,
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(machine.name);
@@ -674,6 +701,19 @@ function MachineCard({
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
+          <button
+            onClick={() => onPhoto(machine.id)}
+            disabled={photoBusy}
+            className="flex items-center gap-1.5 justify-center w-full mb-2"
+            style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '9px 0', fontSize: 12.5, fontWeight: 600, cursor: photoBusy ? 'default' : 'pointer' }}
+          >
+            {photoBusy ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+            {photoBusy ? 'Lendo painel...' : 'Atualizar com foto (vida útil ou atual)'}
+          </button>
+          <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 10, textAlign: 'center' }}>
+            Uma foto atualiza as ferramentas de todas as operações desta máquina de uma vez.
+          </div>
+
           {!showAddOp && (
             <button
               onClick={() => setShowAddOp(true)}
@@ -702,8 +742,6 @@ function MachineCard({
               onAddTool={(tool) => onAddTool(op.id, tool)}
               onDeleteOp={() => onDeleteOp(op.id)}
               onRenameOp={(name) => onRenameOp(op.id, name)}
-              onPhoto={onPhoto}
-              photoBusy={photoBusyOpId === op.id}
             />
           ))}
         </div>
@@ -777,7 +815,7 @@ function AddMachinePanel({ onSave, onCancel, otherMachines }) {
 function CellCard({
   cell, expanded, onToggle, onRename, onDelete, otherMachines,
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
-  expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusyOpId,
+  expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusyMachineId,
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(cell.name);
@@ -847,7 +885,7 @@ function CellCard({
               onDeleteOp={onDeleteOp}
               onRenameOp={onRenameOp}
               onPhoto={onPhoto}
-              photoBusyOpId={photoBusyOpId}
+              photoBusy={photoBusyMachineId === m.id}
             />
           ))}
         </div>
@@ -937,7 +975,7 @@ function SummaryStrip({ cells }) {
 /* ---------------------------------------------------------------------- */
 
 function OcrModal({ state, onClose, onRetake, onSave }) {
-  const { opLabel, status, rows, error } = state;
+  const { machineLabel, status, rows, error } = state;
   const [localRows, setLocalRows] = useState(rows || []);
 
   React.useEffect(() => { setLocalRows(rows || []); }, [rows]);
@@ -961,7 +999,7 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
       >
         <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 14px' }} />
         <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Conferir leitura</div>
-        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>{opLabel}</div>
+        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>{machineLabel}</div>
 
         {status === 'loading' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '30px 0' }}>
@@ -998,42 +1036,52 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
               </div>
             )}
 
-            <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', columnGap: 8, rowGap: 3, marginBottom: 14, alignItems: 'center' }}>
+              <div />
+              <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
+              <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
+
               {localRows.map((row, idx) => (
-                <div key={row.toolId} style={{ padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <span style={{ fontFamily: MONO, fontSize: 13, color: C.text }}>{row.slot}</span>
-                    {row.isRoutine && <span style={{ fontSize: 10, color: C.textFaint }}>rotina</span>}
+                <React.Fragment key={row.toolId}>
+                  <div style={{ fontFamily: MONO, fontSize: 13, color: C.text, borderTop: `1px solid ${C.border}`, paddingTop: 8, alignSelf: 'start' }}>
+                    {row.slot}
+                    {row.opName && <div style={{ fontSize: 8.5, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
                   </div>
 
-                  {!row.isRoutine && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                      <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
-                      <span style={{ fontSize: 10, color: C.textFaint, width: 18 }}>VU</span>
+                  <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                    {row.isRoutine ? (
+                      <div style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>—</div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
+                          <TextInput
+                            inputMode="decimal"
+                            value={row.newVidaUtil}
+                            placeholder="—"
+                            onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
+                            style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
+                          />
+                        </div>
+                        <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
+                      </>
+                    )}
+                  </div>
+
+                  <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
                       <TextInput
                         inputMode="decimal"
-                        value={row.newVidaUtil}
+                        value={row.newVidaAtual}
                         placeholder="—"
-                        onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
-                        style={{ flex: 1, textAlign: 'right', padding: '5px 8px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
+                        onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
+                        style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
                       />
-                      <span style={{ fontSize: 10, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaUtil)} antes</span>
                     </div>
-                  )}
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
-                    <span style={{ fontSize: 10, color: C.textFaint, width: 18 }}>VA</span>
-                    <TextInput
-                      inputMode="decimal"
-                      value={row.newVidaAtual}
-                      placeholder="—"
-                      onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
-                      style={{ flex: 1, textAlign: 'right', padding: '5px 8px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
-                    />
-                    <span style={{ fontSize: 10, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaAtual)} antes</span>
+                    <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
                   </div>
-                </div>
+                </React.Fragment>
               ))}
             </div>
 
@@ -1069,9 +1117,10 @@ export default function App() {
   const [expandedOpId, setExpandedOpId] = useState(null);
   const [addingCell, setAddingCell] = useState(false);
   const [ocrModal, setOcrModal] = useState(null);
-  const [photoBusyOpId, setPhotoBusyOpId] = useState(null);
+  const [photoBusyMachineId, setPhotoBusyMachineId] = useState(null);
+  const [editUnlocked, setEditUnlocked] = useState(false);
   const fileInputRef = useRef(null);
-  const pendingOpId = useRef(null);
+  const pendingMachineId = useRef(null);
 
   const persist = useCallback((updater) => {
     setCells((prev) => {
@@ -1149,17 +1198,15 @@ export default function App() {
     persist((prev) => updateOperationById(prev, opId, (o) => ({ ...o, tools: o.tools.filter((t) => t.id !== toolId) })));
   }
 
-  function triggerPhoto(opId) {
-    pendingOpId.current = opId;
+  function triggerPhoto(machineId) {
+    pendingMachineId.current = machineId;
     fileInputRef.current?.click();
   }
 
-  function findOperation(cellsList, opId) {
+  function findMachine(cellsList, machineId) {
     for (const c of cellsList) {
-      for (const m of c.machines) {
-        const op = m.operations.find((o) => o.id === opId);
-        if (op) return { cell: c, machine: m, operation: op };
-      }
+      const m = c.machines.find((mm) => mm.id === machineId);
+      if (m) return { cell: c, machine: m };
     }
     return null;
   }
@@ -1180,21 +1227,29 @@ export default function App() {
   async function handleFileChange(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
-    const opId = pendingOpId.current;
-    if (!file || !opId) return;
-    const found = findOperation(cells, opId);
+    const machineId = pendingMachineId.current;
+    if (!file || !machineId) return;
+    const found = findMachine(cells, machineId);
     if (!found) return;
-    const opLabel = `${found.cell.name} · ${found.machine.name} · ${found.operation.name}`;
+    const machineLabel = `${found.cell.name} · ${found.machine.name}`;
 
-    setPhotoBusyOpId(opId);
-    setOcrModal({ opId, opLabel, status: 'loading', rows: [] });
+    setPhotoBusyMachineId(machineId);
+    setOcrModal({ machineId, machineLabel, status: 'loading', rows: [] });
 
     try {
       const readings = await readPanelPhoto(file);
       const readingByNum = {};
       readings.forEach((r) => { readingByNum[r.num] = r; });
 
-      const rows = found.operation.tools.map((t) => {
+      // Uma foto só (#800-849 ou #900-949) cobre TODAS as operações
+      // dessa máquina, já que essas variáveis pertencem ao controlador,
+      // não a uma operação específica — por isso junta tudo aqui.
+      const allTools = [];
+      found.machine.operations.forEach((op) => {
+        op.tools.forEach((t) => allTools.push({ tool: t, opName: op.name }));
+      });
+
+      const rows = allTools.map(({ tool: t, opName }) => {
         const atualNum = slotToAtualNum(t.slot);
         const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
         const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
@@ -1218,6 +1273,7 @@ export default function App() {
         return {
           toolId: t.id,
           slot: t.slot,
+          opName,
           isRoutine: t.isRoutine,
           oldVidaAtual: t.vidaAtual,
           newVidaAtual: atualReading ? String(atualReading.value) : '',
@@ -1227,53 +1283,74 @@ export default function App() {
           vidaUtilConfidence,
         };
       });
+      rows.sort((a, b) => compareSlots(a.slot, b.slot));
 
-      setOcrModal({ opId, opLabel, status: 'review', rows });
+      setOcrModal({ machineId, machineLabel, status: 'review', rows });
     } catch (err) {
-      setOcrModal({ opId, opLabel, status: 'error', rows: [], error: err.message });
+      setOcrModal({ machineId, machineLabel, status: 'error', rows: [], error: err.message });
     } finally {
-      setPhotoBusyOpId(null);
+      setPhotoBusyMachineId(null);
     }
   }
 
   function saveOcrRows(rows) {
-    const opId = ocrModal.opId;
-    persist((prev) => updateOperationById(prev, opId, (o) => ({
-      ...o,
-      tools: o.tools.map((t) => {
-        const row = rows.find((r) => r.toolId === t.id);
-        if (!row) return t;
-        const patch = {};
-        const va = parseFloat(row.newVidaAtual);
-        if (row.newVidaAtual !== '' && !isNaN(va)) patch.vidaAtual = va;
-        if (!t.isRoutine) {
-          const vu = parseFloat(row.newVidaUtil);
-          if (row.newVidaUtil !== '' && !isNaN(vu)) patch.vidaUtil = vu;
-        }
-        if (Object.keys(patch).length === 0) return t;
-        return { ...t, ...patch, lastUpdated: new Date().toISOString() };
-      }),
+    const byToolId = {};
+    rows.forEach((r) => { byToolId[r.toolId] = r; });
+    persist((prev) => prev.map((c) => ({
+      ...c,
+      machines: c.machines.map((m) => ({
+        ...m,
+        operations: m.operations.map((o) => ({
+          ...o,
+          tools: o.tools.map((t) => {
+            const row = byToolId[t.id];
+            if (!row) return t;
+            const patch = {};
+            const va = parseFloat(row.newVidaAtual);
+            if (row.newVidaAtual !== '' && !isNaN(va)) patch.vidaAtual = va;
+            if (!t.isRoutine) {
+              const vu = parseFloat(row.newVidaUtil);
+              if (row.newVidaUtil !== '' && !isNaN(vu)) patch.vidaUtil = vu;
+            }
+            if (Object.keys(patch).length === 0) return t;
+            return { ...t, ...patch, lastUpdated: new Date().toISOString() };
+          }),
+        })),
+      })),
     })));
     setOcrModal(null);
   }
 
   function retakePhoto() {
-    const opId = ocrModal?.opId;
+    const machineId = ocrModal?.machineId;
     setOcrModal(null);
-    if (opId) triggerPhoto(opId);
+    if (machineId) triggerPhoto(machineId);
   }
 
   return (
+    <EditLockContext.Provider value={{ unlocked: editUnlocked }}>
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: SANS, color: C.text }}>
       <div style={{ maxWidth: 480, margin: '0 auto', padding: '18px 14px 90px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
           <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Wrench size={17} color={C.accent} />
           </div>
-          <div>
+          <div style={{ flex: 1 }}>
             <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
             <div style={{ fontSize: 11.5, color: C.textFaint }}>Célula · Máquina · Operação</div>
           </div>
+          <button
+            onClick={() => setEditUnlocked((u) => !u)}
+            title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
+            className="flex items-center gap-1.5"
+            style={{
+              background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
+              border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 10px', fontSize: 11.5, cursor: 'pointer',
+            }}
+          >
+            {editUnlocked ? <Unlock size={13} /> : <Lock size={13} />}
+            {editUnlocked ? 'Destravado' : 'Travado'}
+          </button>
         </div>
 
         <SummaryStrip cells={cells} />
@@ -1323,7 +1400,7 @@ export default function App() {
             onDeleteOp={deleteOperation}
             onRenameOp={renameOperation}
             onPhoto={triggerPhoto}
-            photoBusyOpId={photoBusyOpId}
+            photoBusyMachineId={photoBusyMachineId}
           />
         ))}
       </div>
@@ -1332,5 +1409,6 @@ export default function App() {
 
       {ocrModal && <OcrModal state={ocrModal} onClose={() => setOcrModal(null)} onRetake={retakePhoto} onSave={saveOcrRows} />}
     </div>
+    </EditLockContext.Provider>
   );
 }
