@@ -1243,7 +1243,7 @@ function CellDetail({
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
-  onApplyPallet, onResetPallet, onSetBlockPreset,
+  onApplyPallet, onResetPallet, onSetBlockPreset, editUnlocked, onToggleLock,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1254,15 +1254,21 @@ function CellDetail({
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14 }}>
-        <IconBtn title="Voltar" onClick={onBack}><ArrowLeft size={19} /></IconBtn>
+      {/* Barra própria, sangrando até a borda da tela — pra ficar
+          inconfundível que isso é uma tela diferente da lista principal. */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        margin: '-18px -14px 16px', padding: '14px 10px 14px 6px',
+        background: C.surfaceRaised, borderBottom: `2px solid ${C.accent}`,
+      }}>
+        <IconBtn title="Voltar" onClick={onBack}><ArrowLeft size={20} color={C.accent} /></IconBtn>
         {renaming ? (
           <input
             autoFocus
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { onRename(nameDraft); setRenaming(false); } }}
-            style={{ flex: 1, background: C.surfaceRaised, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '6px 9px', color: C.text, fontSize: 16 }}
+            style={{ flex: 1, background: C.surfaceDeep, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '6px 9px', color: C.text, fontSize: 16 }}
           />
         ) : (
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -1277,10 +1283,25 @@ function CellDetail({
             <IconBtn onClick={() => { onRename(nameDraft); setRenaming(false); }}><Check size={16} color={C.ok} /></IconBtn>
             <IconBtn onClick={() => { setNameDraft(cell.name); setRenaming(false); }}><X size={16} /></IconBtn>
           </div>
-        ) : unlocked && (
+        ) : (
           <div className="flex items-center">
-            <IconBtn title="Renomear" onClick={() => setRenaming(true)}><Pencil size={15} /></IconBtn>
-            <IconBtn title="Excluir" danger onClick={() => setConfirmDelete(true)}><Trash2 size={15} /></IconBtn>
+            {unlocked && (
+              <>
+                <IconBtn title="Renomear" onClick={() => setRenaming(true)}><Pencil size={15} /></IconBtn>
+                <IconBtn title="Excluir" danger onClick={() => setConfirmDelete(true)}><Trash2 size={15} /></IconBtn>
+              </>
+            )}
+            <button
+              onClick={onToggleLock}
+              title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
+              style={{
+                marginLeft: 2, background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
+                border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 8px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center',
+              }}
+            >
+              {editUnlocked ? <Unlock size={14} /> : <Lock size={14} />}
+            </button>
           </div>
         )}
       </div>
@@ -1606,6 +1627,25 @@ export default function App() {
 
   const selectedCell = cells.find((c) => c.id === expandedCellId) || null;
 
+  // Integra com o histórico do navegador: entrar numa célula empurra uma
+  // "página" nova, e o botão/gesto voltar do Android sai dela em vez de
+  // fechar o app inteiro.
+  function openCell(cellId) {
+    window.history.pushState({ cellId }, '');
+    setExpandedCellId(cellId);
+    setExpandedMachineId(null);
+    setExpandedOpId(null);
+  }
+  React.useEffect(() => {
+    function onPopState() {
+      setExpandedCellId(null);
+      setExpandedMachineId(null);
+      setExpandedOpId(null);
+    }
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const persist = useCallback((updater) => {
     setCells((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -1628,7 +1668,7 @@ export default function App() {
   function addCell(cell) {
     persist((prev) => [...prev, cell]);
     setAddingCell(false);
-    setExpandedCellId(cell.id); // entra direto na célula recém-criada
+    openCell(cell.id); // entra direto na célula recém-criada
   }
   function deleteCell(cellId) {
     persist((prev) => prev.filter((c) => c.id !== cellId));
@@ -1909,32 +1949,36 @@ export default function App() {
     <EditLockContext.Provider value={{ unlocked: editUnlocked }}>
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: SANS, color: C.text }}>
       <div style={{ maxWidth: 480, margin: '0 auto', padding: '18px 14px 90px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Wrench size={17} color={C.accent} />
+        {!selectedCell && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Wrench size={17} color={C.accent} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
+              <div style={{ fontSize: 11.5, color: C.textFaint }}>Célula · Máquina · Operação</div>
+            </div>
+            <button
+              onClick={() => setEditUnlocked((u) => !u)}
+              title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
+              className="flex items-center gap-1.5"
+              style={{
+                background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
+                border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 10px', fontSize: 11.5, cursor: 'pointer',
+              }}
+            >
+              {editUnlocked ? <Unlock size={13} /> : <Lock size={13} />}
+              {editUnlocked ? 'Destravado' : 'Travado'}
+            </button>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
-            <div style={{ fontSize: 11.5, color: C.textFaint }}>Célula · Máquina · Operação</div>
-          </div>
-          <button
-            onClick={() => setEditUnlocked((u) => !u)}
-            title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
-            className="flex items-center gap-1.5"
-            style={{
-              background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
-              border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 10px', fontSize: 11.5, cursor: 'pointer',
-            }}
-          >
-            {editUnlocked ? <Unlock size={13} /> : <Lock size={13} />}
-            {editUnlocked ? 'Destravado' : 'Travado'}
-          </button>
-        </div>
+        )}
 
         {selectedCell ? (
           <CellDetail
             cell={selectedCell}
-            onBack={() => { setExpandedCellId(null); setExpandedMachineId(null); setExpandedOpId(null); }}
+            onBack={() => window.history.back()}
+            editUnlocked={editUnlocked}
+            onToggleLock={() => setEditUnlocked((u) => !u)}
             onRename={(name) => renameCell(selectedCell.id, name)}
             onDelete={() => { deleteCell(selectedCell.id); setExpandedCellId(null); }}
             otherMachines={flattenMachines(cells)}
@@ -1988,7 +2032,7 @@ export default function App() {
             )}
 
             {cells.map((cell) => (
-              <CellListItem key={cell.id} cell={cell} onOpen={() => setExpandedCellId(cell.id)} />
+              <CellListItem key={cell.id} cell={cell} onOpen={() => openCell(cell.id)} />
             ))}
           </>
         )}
