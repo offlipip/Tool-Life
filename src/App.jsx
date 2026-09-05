@@ -17,9 +17,9 @@ const C = {
   surfaceDeep: '#191d20',
   border: '#2c3237',
   borderLight: '#3a4148',
-  text: '#eceae4',
-  textDim: '#b9c0c6',
-  textFaint: '#8b949c',
+  text: '#f0ece5',
+  textDim: '#d8b294',
+  textFaint: '#c08e63',
   accent: '#ff8a3d',
   accentSoft: 'rgba(255, 138, 61, 0.14)',
   ok: '#5fbf77',
@@ -71,6 +71,10 @@ function compareSlots(a, b) {
 // Cadeado global: enquanto travado, tocar numa ferramenta não abre o
 // formulário de edição — só o botão de zerar (sempre disponível) funciona.
 const EditLockContext = React.createContext({ unlocked: false });
+
+function desgasteForPreset(preset) {
+  return preset === '4cc' ? 1 : 1.5;
+}
 
 function computeRemaining(tool) {
   if (tool.isRoutine) return null;
@@ -365,6 +369,7 @@ function DeleteConfirmBar({ label, onCancel, onConfirm }) {
 /* Cabeçalho reutilizado por Célula / Máquina / Operação: chevron, nome
    (com edição inline), contador de filhos e botões de ação. */
 function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNameDraft, onRenameCommit, onRenameStart, onRenameCancel, onDeleteStart, subtitle, extraRenaming }) {
+  const { unlocked } = React.useContext(EditLockContext);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 12px', cursor: 'pointer' }} onClick={() => !renaming && onToggle()}>
       {expanded ? <ChevronDown size={16} color={C.textDim} /> : <ChevronRight size={16} color={C.textDim} />}
@@ -386,7 +391,7 @@ function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNa
           {subtitle && <div style={{ fontSize: 12, color: C.textFaint }}>{subtitle}</div>}
         </div>
       )}
-      {!renaming && (
+      {!renaming && unlocked && (
         <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
           <IconBtn title="Renomear" onClick={onRenameStart}><Pencil size={14} /></IconBtn>
           <IconBtn title="Excluir" danger onClick={onDeleteStart}><Trash2 size={14} /></IconBtn>
@@ -603,8 +608,9 @@ function LimitePhotoButton({ readings, onReady }) {
 /* Add-tool inline form                                                   */
 /* ---------------------------------------------------------------------- */
 
-function NewToolForm({ onAdd, compact, limiteReadings }) {
-  const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: '', isRoutine: false };
+function NewToolForm({ onAdd, compact, limiteReadings, blockPreset }) {
+  const presetDesgaste = String(desgasteForPreset(blockPreset));
+  const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: presetDesgaste, isRoutine: false };
   const [t, setT] = useState(blank);
   const [vuFromPhoto, setVuFromPhoto] = useState(false);
 
@@ -633,7 +639,7 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
       isRoutine: t.isRoutine,
       vidaUtil: t.isRoutine ? 0 : (parseFloat(t.vidaUtil) || 0),
       vidaAtual: parseFloat(t.vidaAtual) || 0,
-      desgastePeca: parseFloat(t.desgastePeca) || 0,
+      desgastePeca: parseFloat(t.desgastePeca) || desgasteForPreset(blockPreset),
       lastUpdated: null,
     });
     setT(blank);
@@ -694,7 +700,8 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
 /* Operation card (nível 3 — dentro de uma máquina)                       */
 /* ---------------------------------------------------------------------- */
 
-function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp }) {
+function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, blockPreset }) {
+  const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(op.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -757,16 +764,18 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
-          {palletToggle}
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setShowAddTool((s) => !s)}
-              className="flex items-center gap-1.5 justify-center w-full"
-              style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}
-            >
-              <Plus size={14} /> Ferramenta
-            </button>
-          </div>
+          {unlocked && palletToggle}
+          {unlocked && (
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setShowAddTool((s) => !s)}
+                className="flex items-center gap-1.5 justify-center w-full"
+                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}
+              >
+                <Plus size={14} /> Ferramenta
+              </button>
+            </div>
+          )}
 
           {op.tools.length === 0 && !showAddTool && (
             <div style={{ fontSize: 12.5, color: C.textFaint, padding: '10px 0', textAlign: 'center' }}>
@@ -783,7 +792,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
           {showAddTool && (
             <>
               <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-              <NewToolForm compact onAdd={onAddTool} limiteReadings={limiteReadings} />
+              <NewToolForm compact onAdd={onAddTool} limiteReadings={limiteReadings} blockPreset={blockPreset} />
               <button
                 onClick={() => setShowAddTool(false)}
                 className="flex items-center gap-1.5 justify-center mt-2 w-full"
@@ -851,7 +860,7 @@ function ProgramPhotoButton({ onTools }) {
   );
 }
 
-function AddOperationPanel({ onSave, onCancel }) {
+function AddOperationPanel({ onSave, onCancel, blockPreset }) {
   const [name, setName] = useState('');
   const [tools, setTools] = useState([]);
   const [limiteReadings, setLimiteReadings] = useState(null);
@@ -865,7 +874,7 @@ function AddOperationPanel({ onSave, onCancel }) {
         .filter((f) => !existingSlots.has(f.slot))
         .map((f) => ({
           id: genId('tool'), slot: f.slot, bman: f.bman, isRoutine: false,
-          vidaUtil: 0, vidaAtual: 0, desgastePeca: 0, lastUpdated: null,
+          vidaUtil: 0, vidaAtual: 0, desgastePeca: desgasteForPreset(blockPreset), lastUpdated: null,
         }));
       return [...prev, ...additions];
     });
@@ -885,7 +894,7 @@ function AddOperationPanel({ onSave, onCancel }) {
       <div style={{ marginTop: 10 }}>
         <ProgramPhotoButton onTools={addToolsFromProgram} />
         <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} />
+        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} blockPreset={blockPreset} />
       </div>
 
       {tools.length > 0 && (
@@ -979,15 +988,18 @@ function MachineCard({
   onAddOperation, onToggleOp, expandedOpId,
   onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusy, onManualEntry,
-  onPalletCountChange, onApplyPallet, onResetPallet,
+  onPalletCountChange, onApplyPallet, onResetPallet, blockPreset,
 }) {
+  const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(machine.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddOp, setShowAddOp] = useState(false);
+  const [showPanelRead, setShowPanelRead] = useState(false);
 
   const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
   const palletCounts = machine.palletCounts || {};
+  const hasOps = machine.operations.length > 0;
 
   return (
     <div style={{ background: C.surface, borderRadius: 9, border: `1px solid ${C.border}`, marginBottom: 8, overflow: 'hidden' }}>
@@ -1012,26 +1024,11 @@ function MachineCard({
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
-          {machine.operations.length > 0 && (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginBottom: 8 }}>
-              <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
-              <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
-            </div>
-          )}
-          {machine.operations.length > 0 && (
-            <button
-              onClick={() => onManualEntry(machine.id)}
-              className="flex items-center gap-1.5 justify-center w-full mb-2"
-              style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12, cursor: 'pointer' }}
-            >
-              <Pencil size={13} /> Adicionar manualmente
-            </button>
-          )}
-
+          {/* Uso diário em primeiro lugar: contador de peças usinadas */}
           {pallets.length > 0 && (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px', marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: C.textFaint, padding: '6px 0 2px' }}>
-                Peças produzidas desde a última atualização — soma direto na vida atual
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px 6px', marginBottom: 8 }}>
+              <div style={{ fontSize: 13, color: C.textDim, padding: '9px 0 4px', textAlign: 'center', fontWeight: 600 }}>
+                Peças usinadas
               </div>
               {pallets.map((p) => (
                 <PalletCounterRow
@@ -1046,7 +1043,34 @@ function MachineCard({
             </div>
           )}
 
-          {!showAddOp && (
+          {/* Leitura do painel: usada bem menos que o contador, então fica
+              recolhida por padrão pra não poluir a tela do dia a dia. */}
+          {hasOps && (
+            <div style={{ marginBottom: 8 }}>
+              <button
+                onClick={() => setShowPanelRead((v) => !v)}
+                className="flex items-center gap-1.5 justify-center w-full"
+                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
+              >
+                {showPanelRead ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Ler do painel
+              </button>
+              {showPanelRead && (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginTop: 6 }}>
+                  <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
+                  <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
+                  <button
+                    onClick={() => onManualEntry(machine.id)}
+                    className="flex items-center gap-1.5 justify-center w-full"
+                    style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer', margin: '4px 0 8px' }}
+                  >
+                    <Pencil size={13} /> Digitar manualmente
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {unlocked && !showAddOp && (
             <button
               onClick={() => setShowAddOp(true)}
               className="flex items-center gap-1.5 justify-center w-full mb-2"
@@ -1055,11 +1079,11 @@ function MachineCard({
               <Plus size={14} /> Nova operação
             </button>
           )}
-          {showAddOp && <AddOperationPanel onSave={(op) => { onAddOperation(op); setShowAddOp(false); }} onCancel={() => setShowAddOp(false)} />}
+          {showAddOp && <AddOperationPanel blockPreset={blockPreset} onSave={(op) => { onAddOperation(op); setShowAddOp(false); }} onCancel={() => setShowAddOp(false)} />}
 
-          {machine.operations.length === 0 && !showAddOp && (
-            <div style={{ fontSize: 12, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
-              Nenhuma operação cadastrada nesta máquina ainda.
+          {!hasOps && !showAddOp && (
+            <div style={{ fontSize: 12.5, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
+              {unlocked ? 'Nenhuma operação cadastrada nesta máquina ainda.' : 'Sem operações. Destrave o cadeado para cadastrar.'}
             </div>
           )}
 
@@ -1074,6 +1098,7 @@ function MachineCard({
               onAddTool={(tool) => onAddTool(op.id, tool)}
               onDeleteOp={() => onDeleteOp(op.id)}
               onRenameOp={(name, pallet) => onRenameOp(op.id, name, pallet)}
+              blockPreset={blockPreset}
             />
           ))}
         </div>
@@ -1205,7 +1230,7 @@ function CellCard({
             </div>
           )}
 
-          {!showAddMachine && (
+          {unlocked && !showAddMachine && (
             <button
               onClick={() => setShowAddMachine(true)}
               className="flex items-center gap-1.5 justify-center w-full mb-2"
@@ -1223,8 +1248,8 @@ function CellCard({
           )}
 
           {cell.machines.length === 0 && !showAddMachine && (
-            <div style={{ fontSize: 12, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
-              Nenhuma máquina cadastrada nesta célula ainda.
+            <div style={{ fontSize: 12.5, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
+              {unlocked ? 'Nenhuma máquina cadastrada nesta célula ainda.' : 'Sem máquinas. Destrave o cadeado para cadastrar.'}
             </div>
           )}
 
@@ -1250,6 +1275,7 @@ function CellCard({
               onPalletCountChange={onPalletCountChange}
               onApplyPallet={onApplyPallet}
               onResetPallet={onResetPallet}
+              blockPreset={preset}
             />
           ))}
         </div>
@@ -1615,25 +1641,37 @@ export default function App() {
   // operação pertence a esse pallet, e zera o contador — pra atualizar
   // sem precisar ir até o painel de novo.
   function applyPalletCount(machineId, pallet) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => {
-      const count = (m.palletCounts || {})[pallet] || 0;
-      if (count <= 0) return m;
-      return {
-        ...m,
-        palletCounts: { ...(m.palletCounts || {}), [pallet]: 0 },
-        operations: m.operations.map((o) => {
-          if (o.pallet !== pallet) return o;
-          return {
-            ...o,
-            tools: o.tools.map((t) => {
-              const desg = parseFloat(t.desgastePeca) || 0;
-              if (!desg) return t;
-              return { ...t, vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * count, lastUpdated: new Date().toISOString() };
-            }),
-          };
-        }),
-      };
-    }));
+    persist((prev) => prev.map((c) => ({
+      ...c,
+      machines: c.machines.map((m) => {
+        if (m.id !== machineId) return m;
+        const count = (m.palletCounts || {})[pallet] || 0;
+        if (count <= 0) return m;
+        // Ferramentas cadastradas antes do preset existir podem estar com
+        // desgaste 0 — nesses casos usa o padrão da célula em vez de somar
+        // nada (que era o motivo do contador parecer não funcionar).
+        const fallback = desgasteForPreset(c.blockPreset);
+        return {
+          ...m,
+          palletCounts: { ...(m.palletCounts || {}), [pallet]: 0 },
+          operations: m.operations.map((o) => {
+            if (o.pallet !== pallet) return o;
+            return {
+              ...o,
+              tools: o.tools.map((t) => {
+                const desg = parseFloat(t.desgastePeca) || fallback;
+                return {
+                  ...t,
+                  desgastePeca: desg,
+                  vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * count,
+                  lastUpdated: new Date().toISOString(),
+                };
+              }),
+            };
+          }),
+        };
+      }),
+    })));
   }
 
   function findMachine(cellsList, machineId) {
