@@ -17,9 +17,9 @@ const C = {
   surfaceDeep: '#191d20',
   border: '#2c3237',
   borderLight: '#3a4148',
-  text: '#e8e5de',
-  textDim: '#98a0a6',
-  textFaint: '#5c646b',
+  text: '#eceae4',
+  textDim: '#b9c0c6',
+  textFaint: '#8b949c',
   accent: '#ff8a3d',
   accentSoft: 'rgba(255, 138, 61, 0.14)',
   ok: '#5fbf77',
@@ -161,7 +161,7 @@ function IconBtn({ onClick, children, title, danger }) {
 function Field({ label, children }) {
   return (
     <label className="flex flex-col gap-1" style={{ flex: 1, minWidth: 0 }}>
-      <span style={{ fontSize: 11, color: C.textDim }}>{label}</span>
+      <span style={{ fontSize: 12, color: C.textDim }}>{label}</span>
       {children}
     </label>
   );
@@ -199,6 +199,28 @@ function Select(props) {
         outline: 'none', ...(props.style || {}),
       }}
     />
+  );
+}
+
+/* Seletor de slot T01–T49 — evita digitar (e digitar errado) o número
+   da ferramenta no celular. */
+function SlotSelect({ value, onChange }) {
+  return (
+    <select
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full"
+      style={{
+        background: C.surfaceRaised, border: `1px solid ${value ? C.borderLight : C.border}`, borderRadius: 6,
+        padding: '7px 9px', fontSize: 14, color: value ? C.text : C.textFaint, fontFamily: MONO,
+        outline: 'none', appearance: 'none',
+      }}
+    >
+      <option value="">Escolher…</option>
+      {Array.from({ length: 49 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`).map((s) => (
+        <option key={s} value={s}>{s}</option>
+      ))}
+    </select>
   );
 }
 
@@ -361,7 +383,7 @@ function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNa
       ) : (
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14.5, fontWeight: 600, color: C.text }}>{name}</div>
-          {subtitle && <div style={{ fontSize: 11, color: C.textFaint }}>{subtitle}</div>}
+          {subtitle && <div style={{ fontSize: 12, color: C.textFaint }}>{subtitle}</div>}
         </div>
       )}
       {!renaming && (
@@ -396,7 +418,7 @@ function PhotoRow({ label, onFile, busy, busyLabel }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0' }}>
       <span style={{ flex: 1, fontSize: 12.5, color: C.text, fontWeight: 600 }}>{label}</span>
       {busy ? (
-        <span style={{ fontSize: 11, color: C.textFaint, display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ fontSize: 12, color: C.textFaint, display: 'flex', alignItems: 'center', gap: 5 }}>
           <Loader2 size={13} className="animate-spin" /> {busyLabel || 'Lendo...'}
         </span>
       ) : (
@@ -443,7 +465,7 @@ function ToolRow({ tool, onUpdate, onDelete }) {
       <div style={{ padding: '10px 12px', background: C.surfaceRaised, borderRadius: 8, marginBottom: 6, border: `1px solid ${C.borderLight}` }}>
         <div className="flex gap-2 mb-2">
           <Field label="Slot">
-            <TextInput value={draft.slot} onChange={(e) => setDraft({ ...draft, slot: e.target.value })} placeholder="T03" />
+            <SlotSelect value={draft.slot} onChange={(v) => setDraft({ ...draft, slot: v })} />
           </Field>
           <Field label="Cód. ferramenta (BMAN)">
             <TextInput value={draft.bman} onChange={(e) => setDraft({ ...draft, bman: e.target.value })} placeholder="BMAN-0806" />
@@ -499,25 +521,25 @@ function ToolRow({ tool, onUpdate, onDelete }) {
       <StatusDot status={status} />
       <div style={{ minWidth: 46 }}>
         <div style={{ fontFamily: MONO, fontSize: 14, color: C.text }}>{tool.slot || '?'}</div>
-        <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.textFaint }}>{tool.bman || '—'}</div>
+        <div style={{ fontFamily: MONO, fontSize: 11.5, color: C.textFaint }}>{tool.bman || '—'}</div>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <GaugeBar pct={pct} color={STATUS_COLOR[status]} />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-          <span style={{ fontSize: 10.5, color: C.textFaint, fontFamily: MONO }}>
+          <span style={{ fontSize: 11.5, color: C.textFaint, fontFamily: MONO }}>
             {fmtNum(tool.vidaAtual)}{!tool.isRoutine && ` / ${fmtNum(tool.vidaUtil)}`}
           </span>
         </div>
       </div>
       <div style={{ textAlign: 'right', minWidth: 44 }}>
         {tool.isRoutine ? (
-          <span style={{ fontSize: 10.5, color: C.textFaint }}>rotina</span>
+          <span style={{ fontSize: 11.5, color: C.textFaint }}>rotina</span>
         ) : (
           <>
             <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: STATUS_COLOR[status] }}>
               {remaining === null ? '—' : remaining}
             </div>
-            <div style={{ fontSize: 9.5, color: C.textFaint }}>peças</div>
+            <div style={{ fontSize: 10.5, color: C.textFaint }}>peças</div>
           </>
         )}
       </div>
@@ -566,7 +588,7 @@ function LimitePhotoButton({ readings, onReady }) {
         {status === 'loading' ? 'Lendo tela de vida útil...' : (readings ? 'Trocar foto da tela de vida útil' : 'Ler vida útil de uma foto')}
       </button>
       {status === 'ready' && (
-        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 5 }}>
+        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 5 }}>
           {count} valor{count !== 1 ? 'es' : ''} lido{count !== 1 ? 's' : ''} da tela #800-849 — ao digitar o slot (ex: T03), a vida útil preenche sozinha.
         </div>
       )}
@@ -585,7 +607,6 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: '', isRoutine: false };
   const [t, setT] = useState(blank);
   const [vuFromPhoto, setVuFromPhoto] = useState(false);
-  const slotInputRef = useRef(null);
 
   // Se uma foto da tela de vida útil já foi lida (pelo botão acima, no
   // pai), assim que o slot bate com um #80N conhecido, preenche sozinho.
@@ -617,16 +638,13 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
     });
     setT(blank);
     setVuFromPhoto(false);
-    // some pra fila do próprio slot de novo, pra dar pra encadear vários
-    // cadastros seguidos sem precisar tocar em nada além do teclado
-    setTimeout(() => slotInputRef.current?.focus(), 0);
   }
 
   return (
     <div style={{ padding: compact ? '10px' : '12px', background: C.surfaceRaised, borderRadius: 8, border: `1px dashed ${C.borderLight}` }}>
       <div className="flex gap-2 mb-2">
         <Field label="Slot">
-          <TextInput ref={slotInputRef} value={t.slot} onChange={(e) => setT({ ...t, slot: e.target.value })} placeholder="T03" />
+          <SlotSelect value={t.slot} onChange={(v) => setT({ ...t, slot: v })} />
         </Field>
         <Field label="Cód. ferramenta (BMAN)">
           <TextInput value={t.bman} onChange={(e) => setT({ ...t, bman: e.target.value })} placeholder="BMAN-0806" />
@@ -679,7 +697,6 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
 function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(op.name);
-  const [palletDraft, setPalletDraft] = useState(op.pallet || null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddTool, setShowAddTool] = useState(false);
   const [limiteReadings, setLimiteReadings] = useState(null);
@@ -690,21 +707,24 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
   const headStatus = statusFor(minRemaining);
 
   const palletToggle = (
-    <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-      {[1, 2].map((p) => (
-        <button
-          key={p}
-          onClick={() => setPalletDraft(p)}
-          style={{
-            flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12.5, cursor: 'pointer',
-            background: palletDraft === p ? C.accentSoft : 'transparent',
-            color: palletDraft === p ? C.accent : C.textDim,
-            border: `1px solid ${palletDraft === p ? C.accent : C.border}`,
-          }}
-        >
-          Pallet {p}
-        </button>
-      ))}
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>Esta operação roda em qual pallet?</div>
+      <div className="flex gap-2">
+        {[1, 2].map((p) => (
+          <button
+            key={p}
+            onClick={() => onRenameOp(op.name, p)}
+            style={{
+              flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+              background: op.pallet === p ? C.accentSoft : 'transparent',
+              color: op.pallet === p ? C.accent : C.textDim,
+              border: `1px solid ${op.pallet === p ? C.accent : C.border}`,
+            }}
+          >
+            Pallet {p}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -725,10 +745,9 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
         renaming={renaming}
         nameDraft={nameDraft}
         setNameDraft={setNameDraft}
-        extraRenaming={palletToggle}
-        onRenameStart={() => { setPalletDraft(op.pallet || null); setRenaming(true); }}
-        onRenameCommit={() => { onRenameOp(nameDraft, palletDraft); setRenaming(false); }}
-        onRenameCancel={() => { setNameDraft(op.name); setPalletDraft(op.pallet || null); setRenaming(false); }}
+        onRenameStart={() => setRenaming(true)}
+        onRenameCommit={() => { onRenameOp(nameDraft, op.pallet); setRenaming(false); }}
+        onRenameCancel={() => { setNameDraft(op.name); setRenaming(false); }}
         onDeleteStart={() => setConfirmDelete(true)}
       />
 
@@ -738,6 +757,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
+          {palletToggle}
           <div className="flex gap-2 mb-3">
             <button
               onClick={() => setShowAddTool((s) => !s)}
@@ -827,9 +847,6 @@ function ProgramPhotoButton({ onTools }) {
         <IconBtn title="Da galeria" onClick={() => galRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
       </div>
       {status === 'error' && <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui reconhecer nada nessa foto{error ? ` (${error})` : ''}. Cadastre manualmente ou tente outra.</div>}
-      <div style={{ fontSize: 10, color: C.textFaint, marginTop: 5 }}>
-        Lê o slot e o código da ferramenta na tela "PROGRAMA STANDARD" (ex: "T38 BMAN-900"). Confira o resultado — leitura de texto livre erra mais que a da tabela de números.
-      </div>
     </div>
   );
 }
@@ -876,8 +893,8 @@ function AddOperationPanel({ onSave, onCancel }) {
           {tools.map((t) => (
             <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
               <span style={{ fontFamily: MONO, fontSize: 13, color: C.text, minWidth: 40 }}>{t.slot}</span>
-              <span style={{ fontFamily: MONO, fontSize: 11, color: C.textFaint, flex: 1 }}>{t.bman || '—'}</span>
-              <span style={{ fontSize: 11, color: C.textDim }}>{t.isRoutine ? 'rotina' : `vida ${fmtNum(t.vidaUtil)}`}</span>
+              <span style={{ fontFamily: MONO, fontSize: 12, color: C.textFaint, flex: 1 }}>{t.bman || '—'}</span>
+              <span style={{ fontSize: 12, color: C.textDim }}>{t.isRoutine ? 'rotina' : `vida ${fmtNum(t.vidaUtil)}`}</span>
               <IconBtn danger onClick={() => removeTool(t.id)}><Trash2 size={13} /></IconBtn>
             </div>
           ))}
@@ -979,7 +996,7 @@ function MachineCard({
         expanded={expanded}
         onToggle={onToggle}
         name={machine.name}
-        subtitle={`${machine.operations.length} operação${machine.operations.length !== 1 ? 'ões' : ''}`}
+        subtitle={`${machine.operations.length} ${machine.operations.length === 1 ? 'operação' : 'operações'}`}
         renaming={renaming}
         nameDraft={nameDraft}
         setNameDraft={setNameDraft}
@@ -995,21 +1012,25 @@ function MachineCard({
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginBottom: 8 }}>
-            <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
-            <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
-          </div>
-          <button
-            onClick={() => onManualEntry(machine.id)}
-            className="flex items-center gap-1.5 justify-center w-full mb-2"
-            style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12, cursor: 'pointer' }}
-          >
-            <Pencil size={13} /> Adicionar manualmente
-          </button>
+          {machine.operations.length > 0 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginBottom: 8 }}>
+              <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
+              <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
+            </div>
+          )}
+          {machine.operations.length > 0 && (
+            <button
+              onClick={() => onManualEntry(machine.id)}
+              className="flex items-center gap-1.5 justify-center w-full mb-2"
+              style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12, cursor: 'pointer' }}
+            >
+              <Pencil size={13} /> Adicionar manualmente
+            </button>
+          )}
 
           {pallets.length > 0 && (
             <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px', marginBottom: 10 }}>
-              <div style={{ fontSize: 10, color: C.textFaint, padding: '6px 0 2px' }}>
+              <div style={{ fontSize: 11, color: C.textFaint, padding: '6px 0 2px' }}>
                 Peças produzidas desde a última atualização — soma direto na vida atual
               </div>
               {pallets.map((p) => (
@@ -1162,7 +1183,7 @@ function CellCard({
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
           {unlocked && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 5 }}>
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 5 }}>
                 Bloco padrão desta célula (define o desgaste/peça de todas as ferramentas)
               </div>
               <div className="flex gap-2">
@@ -1299,11 +1320,11 @@ function SummaryStrip({ cells }) {
               <StatusDot status={status} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, color: C.text, fontFamily: MONO }}>{r.tool.slot}</div>
-                <div style={{ fontSize: 10.5, color: C.textFaint }}>{r.cellName} · {r.machineName} · {r.opName}</div>
+                <div style={{ fontSize: 11.5, color: C.textFaint }}>{r.cellName} · {r.machineName} · {r.opName}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: STATUS_COLOR[status] }}>{r.remaining}</div>
-                <div style={{ fontSize: 9, color: C.textFaint }}>peças</div>
+                <div style={{ fontSize: 10, color: C.textFaint }}>peças</div>
               </div>
             </div>
           );
@@ -1348,7 +1369,7 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '30px 0' }}>
             <Loader2 size={26} color={C.accent} className="animate-spin" />
             <span style={{ fontSize: 13, color: C.textDim, textAlign: 'center' }}>Lendo painel...</span>
-            <span style={{ fontSize: 11, color: C.textFaint, textAlign: 'center' }}>processamento local, pode levar alguns segundos</span>
+            <span style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>processamento local, pode levar alguns segundos</span>
           </div>
         )}
 
@@ -1366,7 +1387,7 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
 
         {status === 'review' && (
           <>
-            <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>
               VU = vida útil (tela #800-849) · VA = vida atual (tela #900-949). Cada foto só preenche o que aparecer nela.
             </div>
 
@@ -1381,8 +1402,8 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
 
             <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', columnGap: 8, rowGap: 3, marginBottom: 14, alignItems: 'center' }}>
               <div style={{ gridRow: 1, gridColumn: 1 }} />
-              <div style={{ gridRow: 1, gridColumn: 2, fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
-              <div style={{ gridRow: 1, gridColumn: 3, fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
+              <div style={{ gridRow: 1, gridColumn: 2, fontSize: 11, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
+              <div style={{ gridRow: 1, gridColumn: 3, fontSize: 11, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
 
               {/* Colunas inteiras em blocos separados (não linha por linha) —
                   assim a setinha "próximo" do teclado numérico desce dentro
@@ -1391,7 +1412,7 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
               {localRows.map((row, idx) => (
                 <div key={`slot-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 1, fontFamily: MONO, fontSize: 13, color: C.text, borderTop: `1px solid ${C.border}`, paddingTop: 8, alignSelf: 'start' }}>
                   {row.slot}
-                  {row.opName && <div style={{ fontSize: 8.5, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
+                  {row.opName && <div style={{ fontSize: 10, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
                 </div>
               ))}
 
@@ -1411,7 +1432,7 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
                           style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
                         />
                       </div>
-                      <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
+                      <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
                     </>
                   )}
                 </div>
@@ -1429,12 +1450,12 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
                       style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
                     />
                   </div>
-                  <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
+                  <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
                 </div>
               ))}
             </div>
 
-            <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 12 }}>Campos em branco mantêm o valor atual.</div>
+            <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 12 }}>Campos em branco mantêm o valor atual.</div>
 
             <div className="flex gap-2">
               <button onClick={() => onSave(localRows)} className="flex items-center gap-1.5 justify-center" style={{ flex: 1, background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>
@@ -1797,7 +1818,7 @@ export default function App() {
           <span style={{ fontSize: 12, color: C.textDim }}>Células</span>
         </div>
 
-        {!addingCell && (
+        {!addingCell && editUnlocked && (
           <button
             onClick={() => setAddingCell(true)}
             className="flex items-center gap-2"
@@ -1811,7 +1832,9 @@ export default function App() {
 
         {cells.length === 0 && !addingCell && (
           <div style={{ textAlign: 'center', color: C.textFaint, fontSize: 12.5, padding: '20px 10px' }}>
-            Nenhuma célula cadastrada. Comece pela célula que você acompanha todo dia — dentro dela você cadastra as máquinas.
+            {editUnlocked
+              ? 'Nenhuma célula cadastrada. Comece pela célula que você acompanha todo dia — dentro dela você cadastra as máquinas.'
+              : 'Nenhuma célula cadastrada. Destrave o cadeado acima para cadastrar.'}
           </div>
         )}
 

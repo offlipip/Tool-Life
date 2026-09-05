@@ -4,13 +4,21 @@ import { createWorker } from 'tesseract.js';
 // leitura esparsa) e outro pra texto livre (comentário do programa CNC,
 // com letras e pontuação) — cada um com a configuração que funciona
 // melhor pro seu tipo de conteúdo.
+//
+// O Tesseract tem três níveis de modelo treinado: "fast" (leve e rápido,
+// o padrão da biblioteca), o normal, e "best" (o mais preciso e o mais
+// lento/pesado). Usamos o do MEIO — mais preciso que o fast sem o custo
+// de tempo do best, que importa porque o app precisa ser mais rápido que
+// conferir na mão no painel.
+const TESSDATA_NORMAL = 'https://tessdata.projectnaptha.com/4.0.0';
+
 let digitWorkerPromise = null;
 let textWorkerPromise = null;
 
 function getDigitWorker() {
   if (!digitWorkerPromise) {
     digitWorkerPromise = (async () => {
-      const worker = await createWorker('eng');
+      const worker = await createWorker('eng', 1, { langPath: TESSDATA_NORMAL });
       await worker.setParameters({
         // A tela só mostra dígitos, "#" e ".", então restringir o
         // alfabeto ajuda MUITO a acurácia nesse tipo de leitura.
@@ -28,7 +36,7 @@ function getDigitWorker() {
 function getTextWorker() {
   if (!textWorkerPromise) {
     textWorkerPromise = (async () => {
-      const worker = await createWorker('eng');
+      const worker = await createWorker('eng', 1, { langPath: TESSDATA_NORMAL });
       await worker.setParameters({
         // PSM 6 = bloco uniforme de texto — bom pra linhas de comentário
         // do programa, uma abaixo da outra.
@@ -73,6 +81,12 @@ async function preprocess(input, maxDim = 1800) {
     const scale = maxDim / Math.max(w, h);
     w = Math.round(w * scale);
     h = Math.round(h * scale);
+  } else if (Math.max(w, h) < 1100) {
+    // Recorte pequeno: amplia antes de mandar pro OCR. Texto maior é mais
+    // fácil de reconhecer, mesmo que a ampliação não crie detalhe novo.
+    const scale = Math.min(2.5, 1400 / Math.max(w, h));
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
   }
 
   const canvas = document.createElement('canvas');
@@ -112,10 +126,12 @@ function closeEnoughSameLine(a, b, maxGap) {
 
 /**
  * Às vezes o Tesseract quebra um número em dois pedaços (ex: "2030."
- * vira "20" + "30.", ou "70.5" vira "70." + "5"). Continua juntando
- * fragmentos vizinhos na mesma linha até formar um número decimal
- * completo (dígitos após o ponto) ou até não haver mais nada por perto
- * pra juntar.
+ * vira "20" + "30.", ou "70.5" vira "70." + "5").
+ *
+ * Cuidado aqui: já quebrou uma vez por ser frouxo demais. Um valor que
+ * termina em "." normalmente JÁ ESTÁ completo ("763."), então só se
+ * continua juntando depois do ponto quando o próximo pedaço é um único
+ * dígito colado nele (a casa decimal) — nunca um número inteiro ao lado.
  */
 function mergeAdjacentValueFragments(tokens) {
   const sorted = [...tokens].sort((a, b) => {
@@ -131,14 +147,18 @@ function mergeAdjacentValueFragments(tokens) {
     let cur = sorted[i];
     i++;
     if (!cur.text.startsWith('#')) {
-      while (
-        i < sorted.length &&
-        !/\.\d+$/.test(cur.text) && // já tem casa decimal? então já está completo
-        !sorted[i].text.startsWith('#') &&
-        /^\d+\.?$/.test(sorted[i].text) &&
-        closeEnoughSameLine(cur, sorted[i], 14)
-      ) {
+      for (;;) {
         const next = sorted[i];
+        if (!next || next.text.startsWith('#')) break;
+        if (/\.\d+$/.test(cur.text)) break;            // já tem casa decimal: completo
+        if (!/^\d+\.?$/.test(next.text)) break;
+
+        const endsWithDot = cur.text.endsWith('.');
+        // depois do ponto, só aceita UM dígito bem colado (a casa decimal)
+        const maxGap = endsWithDot ? 8 : 14;
+        if (endsWithDot && next.text.length !== 1) break;
+        if (!closeEnoughSameLine(cur, next, maxGap)) break;
+
         cur = {
           text: cur.text + next.text,
           confidence: Math.min(cur.confidence, next.confidence),
