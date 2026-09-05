@@ -18,8 +18,8 @@ const C = {
   border: '#2c3237',
   borderLight: '#3a4148',
   text: '#f0ece5',
-  textDim: '#d8b294',
-  textFaint: '#c08e63',
+  textDim: '#e5c9ae',
+  textFaint: '#d9a374',
   accent: '#ff8a3d',
   accentSoft: 'rgba(255, 138, 61, 0.14)',
   ok: '#5fbf77',
@@ -927,54 +927,73 @@ function AddOperationPanel({ onSave, onCancel, blockPreset }) {
   );
 }
 
-/* Contador de peças por pallet, na Máquina: soma direto na vida atual
-   de todas as ferramentas daquele pallet, sem precisar de nova foto. */
-function PalletCounterRow({ pallet, count, onChange, onApply, onReset }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(count));
+/* Contador de peças por pallet, na Máquina.
+   O app guarda a ÚLTIMA contagem registrada e calcula a diferença
+   sozinho — assim você só digita o número que está no computador
+   naquele momento, sem precisar lembrar de quanto era antes. */
+function PalletCounterRow({ pallet, lastCount, onApply, onReset }) {
+  const [draft, setDraft] = useState('');
 
-  React.useEffect(() => { if (!editing) setDraft(String(count)); }, [count, editing]);
+  const now = parseInt(draft, 10);
+  const valid = !isNaN(now) && now >= 0;
+  const diff = valid ? now - lastCount : null;
+  const isReset = valid && now < lastCount; // contador zerou (troca de turno)
+  const applyAmount = isReset ? now : diff;
 
-  function commitDraft() {
-    const n = parseInt(draft, 10);
-    onChange(isNaN(n) || n < 0 ? 0 : n);
-    setEditing(false);
+  function commit() {
+    if (!valid) return;
+    onApply(applyAmount, now);
+    setDraft('');
+  }
+  function bump(by) {
+    const base = valid ? now : lastCount;
+    setDraft(String(Math.max(0, base + by)));
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
-      <span style={{ fontSize: 12, color: C.textDim, minWidth: 58 }}>Pallet {pallet}</span>
-      <IconBtn title="Menos uma peça" onClick={() => onChange(Math.max(0, count - 1))}><Minus size={14} /></IconBtn>
-      {editing ? (
+    <div style={{ padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 13, color: C.text, minWidth: 62, fontWeight: 600 }}>Pallet {pallet}</span>
+        <IconBtn title="Menos um" onClick={() => bump(-1)}><Minus size={14} /></IconBtn>
         <TextInput
-          autoFocus
           inputMode="numeric"
           value={draft}
+          placeholder={String(lastCount)}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitDraft}
-          onKeyDown={(e) => { if (e.key === 'Enter') commitDraft(); }}
-          style={{ width: 56, textAlign: 'center', padding: '4px 2px' }}
+          style={{ flex: 1, textAlign: 'center', padding: '6px 2px' }}
         />
-      ) : (
-        <span onClick={() => setEditing(true)} style={{ width: 56, textAlign: 'center', fontFamily: MONO, fontSize: 14, color: C.text, cursor: 'pointer' }}>
-          {count}
+        <IconBtn title="Mais um" onClick={() => bump(1)}><Plus size={14} /></IconBtn>
+        <button
+          onClick={commit}
+          disabled={!valid || applyAmount <= 0}
+          style={{
+            fontSize: 12, borderRadius: 6, padding: '6px 10px',
+            background: valid && applyAmount > 0 ? C.accentSoft : 'transparent',
+            color: valid && applyAmount > 0 ? C.accent : C.textFaint,
+            border: `1px solid ${valid && applyAmount > 0 ? C.accent : C.border}`,
+            cursor: valid && applyAmount > 0 ? 'pointer' : 'default',
+          }}
+        >
+          Atualizar
+        </button>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, paddingLeft: 2 }}>
+        <span style={{ fontSize: 11.5, color: C.textFaint, flex: 1 }}>
+          {valid
+            ? (isReset
+              ? `contador zerou — vai somar ${now} ${now === 1 ? 'peça' : 'peças'}`
+              : (diff > 0
+                ? `+${diff} ${diff === 1 ? 'peça' : 'peças'} desde a última atualização`
+                : 'nenhuma peça nova'))
+            : `última contagem registrada: ${lastCount}`}
         </span>
-      )}
-      <IconBtn title="Mais uma peça" onClick={() => onChange(count + 1)}><Plus size={14} /></IconBtn>
-      <button
-        onClick={onApply}
-        disabled={count <= 0}
-        style={{ fontSize: 11.5, background: count > 0 ? C.accentSoft : 'transparent', color: count > 0 ? C.accent : C.textFaint, border: `1px solid ${count > 0 ? C.accent : C.border}`, borderRadius: 6, padding: '5px 9px', cursor: count > 0 ? 'pointer' : 'default' }}
-      >
-        Aplicar
-      </button>
-      <button
-        onClick={onReset}
-        disabled={count === 0}
-        style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: `1px solid ${C.border}`, borderRadius: 6, padding: '5px 9px', cursor: count !== 0 ? 'pointer' : 'default' }}
-      >
-        Zerar
-      </button>
+        <button
+          onClick={onReset}
+          style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+        >
+          zerar contagem
+        </button>
+      </div>
     </div>
   );
 }
@@ -988,7 +1007,7 @@ function MachineCard({
   onAddOperation, onToggleOp, expandedOpId,
   onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusy, onManualEntry,
-  onPalletCountChange, onApplyPallet, onResetPallet, blockPreset,
+  onApplyPallet, onResetPallet, blockPreset,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -998,7 +1017,6 @@ function MachineCard({
   const [showPanelRead, setShowPanelRead] = useState(false);
 
   const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
-  const palletCounts = machine.palletCounts || {};
   const hasOps = machine.operations.length > 0;
 
   return (
@@ -1030,13 +1048,15 @@ function MachineCard({
               <div style={{ fontSize: 13, color: C.textDim, padding: '9px 0 4px', textAlign: 'center', fontWeight: 600 }}>
                 Peças usinadas
               </div>
+              <div style={{ fontSize: 11, color: C.textFaint, textAlign: 'center', paddingBottom: 6 }}>
+                digite a contagem que está no computador agora
+              </div>
               {pallets.map((p) => (
                 <PalletCounterRow
                   key={p}
                   pallet={p}
-                  count={palletCounts[p] || 0}
-                  onChange={(n) => onPalletCountChange(machine.id, p, n)}
-                  onApply={() => onApplyPallet(machine.id, p)}
+                  lastCount={(machine.palletLastCount || {})[p] || 0}
+                  onApply={(amount, newCount) => onApplyPallet(machine.id, p, amount, newCount)}
                   onReset={() => onResetPallet(machine.id, p)}
                 />
               ))}
@@ -1174,7 +1194,7 @@ function CellCard({
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
-  onPalletCountChange, onApplyPallet, onResetPallet, onSetBlockPreset,
+  onApplyPallet, onResetPallet, onSetBlockPreset,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1272,7 +1292,6 @@ function CellCard({
               onPhotoFile={onPhotoFile}
               photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
               onManualEntry={onManualEntry}
-              onPalletCountChange={onPalletCountChange}
               onApplyPallet={onApplyPallet}
               onResetPallet={onResetPallet}
               blockPreset={preset}
@@ -1631,29 +1650,30 @@ export default function App() {
     })));
   }
 
-  function setPalletCount(machineId, pallet, count) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, palletCounts: { ...(m.palletCounts || {}), [pallet]: count } })));
-  }
   function resetPalletCount(machineId, pallet) {
-    setPalletCount(machineId, pallet, 0);
+    persist((prev) => updateMachineById(prev, machineId, (m) => ({
+      ...m,
+      palletLastCount: { ...(m.palletLastCount || {}), [pallet]: 0 },
+    })));
   }
-  // Soma "desgaste x peças" na vida atual de toda ferramenta cujo
-  // operação pertence a esse pallet, e zera o contador — pra atualizar
-  // sem precisar ir até o painel de novo.
-  function applyPalletCount(machineId, pallet) {
+
+  // Soma "desgaste x peças novas" na vida atual de toda ferramenta cujo
+  // operação pertence a esse pallet, e guarda a nova contagem como
+  // referência — assim na próxima vez basta digitar o número do
+  // computador de novo, sem precisar lembrar de quanto era antes.
+  function applyPalletCount(machineId, pallet, amount, newCount) {
+    if (!amount || amount <= 0) return;
     persist((prev) => prev.map((c) => ({
       ...c,
       machines: c.machines.map((m) => {
         if (m.id !== machineId) return m;
-        const count = (m.palletCounts || {})[pallet] || 0;
-        if (count <= 0) return m;
         // Ferramentas cadastradas antes do preset existir podem estar com
         // desgaste 0 — nesses casos usa o padrão da célula em vez de somar
         // nada (que era o motivo do contador parecer não funcionar).
         const fallback = desgasteForPreset(c.blockPreset);
         return {
           ...m,
-          palletCounts: { ...(m.palletCounts || {}), [pallet]: 0 },
+          palletLastCount: { ...(m.palletLastCount || {}), [pallet]: newCount },
           operations: m.operations.map((o) => {
             if (o.pallet !== pallet) return o;
             return {
@@ -1663,7 +1683,7 @@ export default function App() {
                 return {
                   ...t,
                   desgastePeca: desg,
-                  vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * count,
+                  vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * amount,
                   lastUpdated: new Date().toISOString(),
                 };
               }),
@@ -1902,7 +1922,6 @@ export default function App() {
             photoBusyMachineId={photoBusyMachineId}
             photoBusyKind={photoBusyKind}
             onManualEntry={openManualEntry}
-            onPalletCountChange={setPalletCount}
             onApplyPallet={applyPalletCount}
             onResetPallet={resetPalletCount}
             onSetBlockPreset={setBlockPreset}
