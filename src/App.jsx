@@ -1,9 +1,9 @@
 import React, { useState, useRef, useCallback } from 'react';
 import {
-  Plus, ChevronDown, ChevronRight, Camera, Pencil, Trash2, Check, X,
-  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock,
+  Plus, Minus, ChevronDown, ChevronRight, Camera, Image as ImageIcon, Pencil, Trash2, Check, X,
+  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon,
 } from 'lucide-react';
-import { readPanelPhoto } from './ocr.js';
+import { readPanelPhoto, readProgramPhoto } from './ocr.js';
 import { loadData, saveData } from './storage.js';
 
 /* ---------------------------------------------------------------------- */
@@ -167,10 +167,11 @@ function Field({ label, children }) {
   );
 }
 
-function TextInput(props) {
+const TextInput = React.forwardRef(function TextInput(props, ref) {
   return (
     <input
       {...props}
+      ref={ref}
       onFocus={(e) => {
         props.onFocus?.(e);
         // dá tempo do teclado abrir e o viewport encolher antes de rolar,
@@ -185,7 +186,7 @@ function TextInput(props) {
       }}
     />
   );
-}
+});
 
 function Select(props) {
   return (
@@ -205,6 +206,116 @@ function GaugeBar({ pct, color }) {
   return (
     <div style={{ height: 5, width: '100%', background: C.border, borderRadius: 3, overflow: 'hidden' }}>
       <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 300ms ease' }} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Recorte da foto — arrasta os dois cantos pra excluir menu/reflexo antes */
+/* de mandar pro OCR. Sem zoom/pinça: só os dois pontos definem o retângulo. */
+/* ---------------------------------------------------------------------- */
+
+function CropModal({ file, title, onConfirm, onCancel }) {
+  const [imgUrl, setImgUrl] = useState(null);
+  const [natural, setNatural] = useState({ w: 1, h: 1 });
+  const [rect, setRect] = useState({ x0: 4, y0: 12, x1: 96, y1: 88 });
+  const containerRef = useRef(null);
+  const dragRef = useRef(null);
+
+  React.useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setImgUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  function pointerToPercent(clientX, clientY) {
+    const box = containerRef.current.getBoundingClientRect();
+    const px = Math.min(100, Math.max(0, ((clientX - box.left) / box.width) * 100));
+    const py = Math.min(100, Math.max(0, ((clientY - box.top) / box.height) * 100));
+    return { px, py };
+  }
+
+  function startDrag(corner) {
+    return (e) => {
+      e.preventDefault();
+      e.target.setPointerCapture?.(e.pointerId);
+      dragRef.current = corner;
+    };
+  }
+  function onMove(e) {
+    if (!dragRef.current) return;
+    const { px, py } = pointerToPercent(e.clientX, e.clientY);
+    setRect((prev) => (dragRef.current === 'tl'
+      ? { ...prev, x0: Math.min(px, prev.x1 - 5), y0: Math.min(py, prev.y1 - 5) }
+      : { ...prev, x1: Math.max(px, prev.x0 + 5), y1: Math.max(py, prev.y0 + 5) }));
+  }
+  function endDrag() { dragRef.current = null; }
+
+  function confirm() {
+    const img = new Image();
+    img.onload = () => {
+      const sx = (rect.x0 / 100) * img.naturalWidth;
+      const sy = (rect.y0 / 100) * img.naturalHeight;
+      const sw = ((rect.x1 - rect.x0) / 100) * img.naturalWidth;
+      const sh = ((rect.y1 - rect.y0) / 100) * img.naturalHeight;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(sw));
+      canvas.height = Math.max(1, Math.round(sh));
+      canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      onConfirm(canvas);
+    };
+    img.src = imgUrl;
+  }
+
+  const handleStyle = (x, y) => ({
+    position: 'absolute', left: `${x}%`, top: `${y}%`, transform: 'translate(-50%,-50%)',
+    width: 26, height: 26, borderRadius: 999, background: C.accent, border: `2px solid #1a1207`,
+    touchAction: 'none', cursor: 'grab', zIndex: 2,
+  });
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 60, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 16px 8px', color: C.text }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 2 }}>Recorte a área dos números</div>
+        <div style={{ fontSize: 11.5, color: C.textFaint }}>{title} · arraste os dois cantos pra fora do menu e do reflexo</div>
+      </div>
+
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', padding: '0 12px', minHeight: 0 }}>
+        <div
+          ref={containerRef}
+          onPointerMove={onMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          style={{ position: 'relative', width: '100%', lineHeight: 0 }}
+        >
+          {imgUrl && (
+            <img
+              src={imgUrl}
+              alt=""
+              onLoad={(e) => setNatural({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
+              style={{ width: '100%', height: 'auto', display: 'block', userSelect: 'none' }}
+              draggable={false}
+            />
+          )}
+          {/* sombra fora do retângulo escolhido */}
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', clipPath: `polygon(0 0,100% 0,100% 100%,0 100%,0 ${rect.y0}%,${rect.x0}% ${rect.y0}%,${rect.x0}% ${rect.y1}%,${rect.x1}% ${rect.y1}%,${rect.x1}% ${rect.y0}%,0 ${rect.y0}%)` }} />
+          <div style={{
+            position: 'absolute', left: `${rect.x0}%`, top: `${rect.y0}%`, width: `${rect.x1 - rect.x0}%`, height: `${rect.y1 - rect.y0}%`,
+            border: `2px solid ${C.accent}`, boxSizing: 'border-box', pointerEvents: 'none',
+          }} />
+          <div style={handleStyle(rect.x0, rect.y0)} onPointerDown={startDrag('tl')} />
+          <div style={handleStyle(rect.x1, rect.y1)} onPointerDown={startDrag('br')} />
+        </div>
+      </div>
+
+      <div className="flex gap-2" style={{ padding: 16 }}>
+        <button onClick={confirm} className="flex items-center gap-1.5 justify-center" style={{ flex: 1, background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '11px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+          <CropIcon size={15} /> Confirmar recorte
+        </button>
+        <button onClick={onCancel} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '11px 16px', fontSize: 14, cursor: 'pointer' }}>
+          Cancelar
+        </button>
+      </div>
     </div>
   );
 }
@@ -231,20 +342,22 @@ function DeleteConfirmBar({ label, onCancel, onConfirm }) {
 
 /* Cabeçalho reutilizado por Célula / Máquina / Operação: chevron, nome
    (com edição inline), contador de filhos e botões de ação. */
-function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNameDraft, onRenameCommit, onRenameStart, onRenameCancel, onDeleteStart, subtitle }) {
+function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNameDraft, onRenameCommit, onRenameStart, onRenameCancel, onDeleteStart, subtitle, extraRenaming }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 12px', cursor: 'pointer' }} onClick={() => !renaming && onToggle()}>
       {expanded ? <ChevronDown size={16} color={C.textDim} /> : <ChevronRight size={16} color={C.textDim} />}
       {icon}
       {renaming ? (
-        <input
-          autoFocus
-          value={nameDraft}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => setNameDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onRenameCommit(); }}
-          style={{ flex: 1, background: C.surfaceRaised, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '5px 8px', color: C.text, fontSize: 14 }}
-        />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+          <input
+            autoFocus
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') onRenameCommit(); }}
+            style={{ background: C.surfaceRaised, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '5px 8px', color: C.text, fontSize: 14 }}
+          />
+          {extraRenaming}
+        </div>
       ) : (
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 14.5, fontWeight: 600, color: C.text }}>{name}</div>
@@ -262,6 +375,37 @@ function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNa
           <IconBtn onClick={onRenameCommit}><Check size={15} color={C.ok} /></IconBtn>
           <IconBtn onClick={onRenameCancel}><X size={15} /></IconBtn>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* Linha com rótulo + botão de câmera + botão de galeria, usada nos dois
+   gatilhos de foto (vida útil / vida atual) da máquina. */
+function PhotoRow({ label, onFile, busy, busyLabel }) {
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+  function pick(ref) {
+    return (e) => {
+      const f = e.target.files?.[0];
+      e.target.value = '';
+      if (f) onFile(f);
+    };
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0' }}>
+      <span style={{ flex: 1, fontSize: 12.5, color: C.text, fontWeight: 600 }}>{label}</span>
+      {busy ? (
+        <span style={{ fontSize: 11, color: C.textFaint, display: 'flex', alignItems: 'center', gap: 5 }}>
+          <Loader2 size={13} className="animate-spin" /> {busyLabel || 'Lendo...'}
+        </span>
+      ) : (
+        <>
+          <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pick(camRef)} />
+          <input ref={galRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick(galRef)} />
+          <IconBtn title="Tirar foto" onClick={() => camRef.current?.click()}><Camera size={16} color={C.accent} /></IconBtn>
+          <IconBtn title="Escolher da galeria" onClick={() => galRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
+        </>
       )}
     </div>
   );
@@ -309,16 +453,16 @@ function ToolRow({ tool, onUpdate, onDelete }) {
           <input type="checkbox" checked={!!draft.isRoutine} onChange={(e) => setDraft({ ...draft, isRoutine: e.target.checked })} />
           Ferramenta de rotina (sem vida útil, ex: limpeza)
         </label>
-        {!draft.isRoutine && (
-          <div className="flex gap-2 mb-2">
+        <div className="flex gap-2 mb-2">
+          {!draft.isRoutine && (
             <Field label="Vida útil">
               <TextInput inputMode="decimal" value={draft.vidaUtil} onChange={(e) => setDraft({ ...draft, vidaUtil: e.target.value })} placeholder="480" />
             </Field>
-            <Field label="Desgaste / peça">
-              <TextInput inputMode="decimal" value={draft.desgastePeca} onChange={(e) => setDraft({ ...draft, desgastePeca: e.target.value })} placeholder="1.5" />
-            </Field>
-          </div>
-        )}
+          )}
+          <Field label="Desgaste / peça">
+            <TextInput inputMode="decimal" value={draft.desgastePeca} onChange={(e) => setDraft({ ...draft, desgastePeca: e.target.value })} placeholder="1.5" />
+          </Field>
+        </div>
         <Field label={draft.isRoutine ? 'Contador atual' : 'Vida atual'}>
           <TextInput inputMode="decimal" value={draft.vidaAtual} onChange={(e) => setDraft({ ...draft, vidaAtual: e.target.value })} placeholder="0" />
         </Field>
@@ -441,6 +585,7 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: '', isRoutine: false };
   const [t, setT] = useState(blank);
   const [vuFromPhoto, setVuFromPhoto] = useState(false);
+  const slotInputRef = useRef(null);
 
   // Se uma foto da tela de vida útil já foi lida (pelo botão acima, no
   // pai), assim que o slot bate com um #80N conhecido, preenche sozinho.
@@ -467,18 +612,21 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
       isRoutine: t.isRoutine,
       vidaUtil: t.isRoutine ? 0 : (parseFloat(t.vidaUtil) || 0),
       vidaAtual: parseFloat(t.vidaAtual) || 0,
-      desgastePeca: t.isRoutine ? 0 : (parseFloat(t.desgastePeca) || 0),
+      desgastePeca: parseFloat(t.desgastePeca) || 0,
       lastUpdated: null,
     });
     setT(blank);
     setVuFromPhoto(false);
+    // some pra fila do próprio slot de novo, pra dar pra encadear vários
+    // cadastros seguidos sem precisar tocar em nada além do teclado
+    setTimeout(() => slotInputRef.current?.focus(), 0);
   }
 
   return (
     <div style={{ padding: compact ? '10px' : '12px', background: C.surfaceRaised, borderRadius: 8, border: `1px dashed ${C.borderLight}` }}>
       <div className="flex gap-2 mb-2">
         <Field label="Slot">
-          <TextInput value={t.slot} onChange={(e) => setT({ ...t, slot: e.target.value })} placeholder="T03" />
+          <TextInput ref={slotInputRef} value={t.slot} onChange={(e) => setT({ ...t, slot: e.target.value })} placeholder="T03" />
         </Field>
         <Field label="Cód. ferramenta (BMAN)">
           <TextInput value={t.bman} onChange={(e) => setT({ ...t, bman: e.target.value })} placeholder="BMAN-0806" />
@@ -488,8 +636,8 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
         <input type="checkbox" checked={t.isRoutine} onChange={(e) => setT({ ...t, isRoutine: e.target.checked })} />
         Ferramenta de rotina (sem vida útil, ex: limpeza)
       </label>
-      {!t.isRoutine && (
-        <div className="flex gap-2 mb-2">
+      <div className="flex gap-2 mb-2">
+        {!t.isRoutine && (
           <Field label="Vida útil">
             <TextInput
               inputMode="decimal"
@@ -500,11 +648,11 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
             />
             {vuFromPhoto && <span style={{ fontSize: 10, color: C.ok }}>✓ lido da foto — confira</span>}
           </Field>
-          <Field label="Desgaste / peça">
-            <TextInput inputMode="decimal" value={t.desgastePeca} onChange={(e) => setT({ ...t, desgastePeca: e.target.value })} placeholder="1.5" />
-          </Field>
-        </div>
-      )}
+        )}
+        <Field label="Desgaste / peça">
+          <TextInput inputMode="decimal" value={t.desgastePeca} onChange={(e) => setT({ ...t, desgastePeca: e.target.value })} placeholder="1.5" />
+        </Field>
+      </div>
       <Field label={t.isRoutine ? 'Contador atual' : 'Vida atual'}>
         <TextInput inputMode="decimal" value={t.vidaAtual} onChange={(e) => setT({ ...t, vidaAtual: e.target.value })} placeholder="0" />
       </Field>
@@ -531,6 +679,7 @@ function NewToolForm({ onAdd, compact, limiteReadings }) {
 function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(op.name);
+  const [palletDraft, setPalletDraft] = useState(op.pallet || null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddTool, setShowAddTool] = useState(false);
   const [limiteReadings, setLimiteReadings] = useState(null);
@@ -539,8 +688,25 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
   const worst = active.map((t) => computeRemaining(t)).filter((r) => r !== null);
   const minRemaining = worst.length ? Math.min(...worst) : null;
   const headStatus = statusFor(minRemaining);
-  const subtitle = `${op.tools.length} ferramenta${op.tools.length !== 1 ? 's' : ''}` +
-    (minRemaining !== null ? ` · ${minRemaining} pç até a próxima troca` : '');
+
+  const palletToggle = (
+    <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+      {[1, 2].map((p) => (
+        <button
+          key={p}
+          onClick={() => setPalletDraft(p)}
+          style={{
+            flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12.5, cursor: 'pointer',
+            background: palletDraft === p ? C.accentSoft : 'transparent',
+            color: palletDraft === p ? C.accent : C.textDim,
+            border: `1px solid ${palletDraft === p ? C.accent : C.border}`,
+          }}
+        >
+          Pallet {p}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div style={{ background: C.surfaceDeep, borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 8, overflow: 'hidden' }}>
@@ -549,13 +715,20 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
         expanded={expanded}
         onToggle={onToggle}
         name={op.name}
-        subtitle={<span>{`${op.tools.length} ferramenta${op.tools.length !== 1 ? 's' : ''}`}{minRemaining !== null && <> · <span style={{ color: STATUS_COLOR[headStatus] }}>{minRemaining} pç até a próxima troca</span></>}</span>}
+        subtitle={
+          <span>
+            {op.pallet && <>Pallet {op.pallet} · </>}
+            {`${op.tools.length} ferramenta${op.tools.length !== 1 ? 's' : ''}`}
+            {minRemaining !== null && <> · <span style={{ color: STATUS_COLOR[headStatus] }}>{minRemaining} pç até a próxima troca</span></>}
+          </span>
+        }
         renaming={renaming}
         nameDraft={nameDraft}
         setNameDraft={setNameDraft}
-        onRenameStart={() => setRenaming(true)}
-        onRenameCommit={() => { onRenameOp(nameDraft); setRenaming(false); }}
-        onRenameCancel={() => { setNameDraft(op.name); setRenaming(false); }}
+        extraRenaming={palletToggle}
+        onRenameStart={() => { setPalletDraft(op.pallet || null); setRenaming(true); }}
+        onRenameCommit={() => { onRenameOp(nameDraft, palletDraft); setRenaming(false); }}
+        onRenameCancel={() => { setNameDraft(op.name); setPalletDraft(op.pallet || null); setRenaming(false); }}
         onDeleteStart={() => setConfirmDelete(true)}
       />
 
@@ -610,6 +783,57 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 /* Add operation panel (nome + ferramentas de uma vez)                    */
 /* ---------------------------------------------------------------------- */
 
+function ProgramPhotoButton({ onTools }) {
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+
+  async function handleFile(file) {
+    setStatus('loading');
+    setError('');
+    try {
+      const found = await readProgramPhoto(file);
+      if (found.length === 0) {
+        setStatus('error');
+        setError('nenhuma ferramenta reconhecida nessa foto');
+        return;
+      }
+      onTools(found);
+      setStatus('idle');
+    } catch (err) {
+      setStatus('error');
+      setError(err.message);
+    }
+  }
+  function pick(ref) {
+    return (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleFile(f); };
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pick(camRef)} />
+      <input ref={galRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick(galRef)} />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={() => camRef.current?.click()}
+          disabled={status === 'loading'}
+          className="flex items-center gap-1.5 justify-center"
+          style={{ flex: 1, background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: status === 'loading' ? 'default' : 'pointer' }}
+        >
+          {status === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+          {status === 'loading' ? 'Lendo programa...' : 'Ler ferramentas do programa'}
+        </button>
+        <IconBtn title="Da galeria" onClick={() => galRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
+      </div>
+      {status === 'error' && <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui reconhecer nada nessa foto{error ? ` (${error})` : ''}. Cadastre manualmente ou tente outra.</div>}
+      <div style={{ fontSize: 10, color: C.textFaint, marginTop: 5 }}>
+        Lê o slot e o código da ferramenta na tela "PROGRAMA STANDARD" (ex: "T38 BMAN-900"). Confira o resultado — leitura de texto livre erra mais que a da tabela de números.
+      </div>
+    </div>
+  );
+}
+
 function AddOperationPanel({ onSave, onCancel }) {
   const [name, setName] = useState('');
   const [tools, setTools] = useState([]);
@@ -617,9 +841,21 @@ function AddOperationPanel({ onSave, onCancel }) {
 
   function addTool(tool) { setTools((prev) => [...prev, tool]); }
   function removeTool(id) { setTools((prev) => prev.filter((t) => t.id !== id)); }
+  function addToolsFromProgram(found) {
+    setTools((prev) => {
+      const existingSlots = new Set(prev.map((t) => t.slot));
+      const additions = found
+        .filter((f) => !existingSlots.has(f.slot))
+        .map((f) => ({
+          id: genId('tool'), slot: f.slot, bman: f.bman, isRoutine: false,
+          vidaUtil: 0, vidaAtual: 0, desgastePeca: 0, lastUpdated: null,
+        }));
+      return [...prev, ...additions];
+    });
+  }
   function save() {
     if (!name.trim()) return;
-    onSave({ id: genId('op'), name: name.trim(), tools });
+    onSave({ id: genId('op'), name: name.trim(), pallet: null, tools });
   }
 
   return (
@@ -628,6 +864,12 @@ function AddOperationPanel({ onSave, onCancel }) {
       <Field label="Nome da operação">
         <TextInput autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="OP 800" style={{ fontFamily: SANS }} />
       </Field>
+
+      <div style={{ marginTop: 10 }}>
+        <ProgramPhotoButton onTools={addToolsFromProgram} />
+        <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
+        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} />
+      </div>
 
       {tools.length > 0 && (
         <div style={{ marginTop: 10, marginBottom: 4 }}>
@@ -641,11 +883,6 @@ function AddOperationPanel({ onSave, onCancel }) {
           ))}
         </div>
       )}
-
-      <div style={{ marginTop: 10 }}>
-        <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} />
-      </div>
 
       <div className="flex gap-2 mt-3">
         <button
@@ -664,6 +901,58 @@ function AddOperationPanel({ onSave, onCancel }) {
   );
 }
 
+/* Contador de peças por pallet, na Máquina: soma direto na vida atual
+   de todas as ferramentas daquele pallet, sem precisar de nova foto. */
+function PalletCounterRow({ pallet, count, onChange, onApply, onReset }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(count));
+
+  React.useEffect(() => { if (!editing) setDraft(String(count)); }, [count, editing]);
+
+  function commitDraft() {
+    const n = parseInt(draft, 10);
+    onChange(isNaN(n) || n < 0 ? 0 : n);
+    setEditing(false);
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
+      <span style={{ fontSize: 12, color: C.textDim, minWidth: 58 }}>Pallet {pallet}</span>
+      <IconBtn title="Menos uma peça" onClick={() => onChange(Math.max(0, count - 1))}><Minus size={14} /></IconBtn>
+      {editing ? (
+        <TextInput
+          autoFocus
+          inputMode="numeric"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitDraft(); }}
+          style={{ width: 56, textAlign: 'center', padding: '4px 2px' }}
+        />
+      ) : (
+        <span onClick={() => setEditing(true)} style={{ width: 56, textAlign: 'center', fontFamily: MONO, fontSize: 14, color: C.text, cursor: 'pointer' }}>
+          {count}
+        </span>
+      )}
+      <IconBtn title="Mais uma peça" onClick={() => onChange(count + 1)}><Plus size={14} /></IconBtn>
+      <button
+        onClick={onApply}
+        disabled={count <= 0}
+        style={{ fontSize: 11.5, background: count > 0 ? C.accentSoft : 'transparent', color: count > 0 ? C.accent : C.textFaint, border: `1px solid ${count > 0 ? C.accent : C.border}`, borderRadius: 6, padding: '5px 9px', cursor: count > 0 ? 'pointer' : 'default' }}
+      >
+        Aplicar
+      </button>
+      <button
+        onClick={onReset}
+        disabled={count === 0}
+        style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: `1px solid ${C.border}`, borderRadius: 6, padding: '5px 9px', cursor: count !== 0 ? 'pointer' : 'default' }}
+      >
+        Zerar
+      </button>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Machine card (nível 2 — dentro de uma célula)                          */
 /* ---------------------------------------------------------------------- */
@@ -671,12 +960,17 @@ function AddOperationPanel({ onSave, onCancel }) {
 function MachineCard({
   machine, expanded, onToggle, onRename, onDelete,
   onAddOperation, onToggleOp, expandedOpId,
-  onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusy,
+  onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
+  onPhotoFile, photoBusy, onManualEntry,
+  onPalletCountChange, onApplyPallet, onResetPallet,
 }) {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(machine.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddOp, setShowAddOp] = useState(false);
+
+  const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
+  const palletCounts = machine.palletCounts || {};
 
   return (
     <div style={{ background: C.surface, borderRadius: 9, border: `1px solid ${C.border}`, marginBottom: 8, overflow: 'hidden' }}>
@@ -701,18 +995,35 @@ function MachineCard({
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
-          <button
-            onClick={() => onPhoto(machine.id)}
-            disabled={photoBusy}
-            className="flex items-center gap-1.5 justify-center w-full mb-2"
-            style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '9px 0', fontSize: 12.5, fontWeight: 600, cursor: photoBusy ? 'default' : 'pointer' }}
-          >
-            {photoBusy ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-            {photoBusy ? 'Lendo painel...' : 'Atualizar com foto (vida útil ou atual)'}
-          </button>
-          <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 10, textAlign: 'center' }}>
-            Uma foto atualiza as ferramentas de todas as operações desta máquina de uma vez.
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginBottom: 8 }}>
+            <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
+            <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
           </div>
+          <button
+            onClick={() => onManualEntry(machine.id)}
+            className="flex items-center gap-1.5 justify-center w-full mb-2"
+            style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12, cursor: 'pointer' }}
+          >
+            <Pencil size={13} /> Adicionar manualmente
+          </button>
+
+          {pallets.length > 0 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px', marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: C.textFaint, padding: '6px 0 2px' }}>
+                Peças produzidas desde a última atualização — soma direto na vida atual
+              </div>
+              {pallets.map((p) => (
+                <PalletCounterRow
+                  key={p}
+                  pallet={p}
+                  count={palletCounts[p] || 0}
+                  onChange={(n) => onPalletCountChange(machine.id, p, n)}
+                  onApply={() => onApplyPallet(machine.id, p)}
+                  onReset={() => onResetPallet(machine.id, p)}
+                />
+              ))}
+            </div>
+          )}
 
           {!showAddOp && (
             <button
@@ -741,7 +1052,7 @@ function MachineCard({
               onDeleteTool={(toolId) => onDeleteTool(op.id, toolId)}
               onAddTool={(tool) => onAddTool(op.id, tool)}
               onDeleteOp={() => onDeleteOp(op.id)}
-              onRenameOp={(name) => onRenameOp(op.id, name)}
+              onRenameOp={(name, pallet) => onRenameOp(op.id, name, pallet)}
             />
           ))}
         </div>
@@ -815,12 +1126,16 @@ function AddMachinePanel({ onSave, onCancel, otherMachines }) {
 function CellCard({
   cell, expanded, onToggle, onRename, onDelete, otherMachines,
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
-  expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, onPhoto, photoBusyMachineId,
+  expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
+  onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
+  onPalletCountChange, onApplyPallet, onResetPallet, onSetBlockPreset,
 }) {
+  const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(cell.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddMachine, setShowAddMachine] = useState(false);
+  const preset = cell.blockPreset || '6cc';
 
   return (
     <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, marginBottom: 10, overflow: 'hidden' }}>
@@ -829,7 +1144,7 @@ function CellCard({
         expanded={expanded}
         onToggle={onToggle}
         name={cell.name}
-        subtitle={`${cell.machines.length} máquina${cell.machines.length !== 1 ? 's' : ''}`}
+        subtitle={`${cell.machines.length} máquina${cell.machines.length !== 1 ? 's' : ''} · bloco padrão ${preset}`}
         renaming={renaming}
         nameDraft={nameDraft}
         setNameDraft={setNameDraft}
@@ -845,6 +1160,30 @@ function CellCard({
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
+          {unlocked && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10.5, color: C.textFaint, marginBottom: 5 }}>
+                Bloco padrão desta célula (define o desgaste/peça de todas as ferramentas)
+              </div>
+              <div className="flex gap-2">
+                {['4cc', '6cc'].map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => onSetBlockPreset(cell.id, p)}
+                    style={{
+                      flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+                      background: preset === p ? C.accentSoft : 'transparent',
+                      color: preset === p ? C.accent : C.textDim,
+                      border: `1px solid ${preset === p ? C.accent : C.border}`,
+                    }}
+                  >
+                    {p} {p === '4cc' ? '(desgaste 1)' : '(desgaste 1.5)'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!showAddMachine && (
             <button
               onClick={() => setShowAddMachine(true)}
@@ -884,8 +1223,12 @@ function CellCard({
               onAddTool={onAddTool}
               onDeleteOp={onDeleteOp}
               onRenameOp={onRenameOp}
-              onPhoto={onPhoto}
-              photoBusy={photoBusyMachineId === m.id}
+              onPhotoFile={onPhotoFile}
+              photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
+              onManualEntry={onManualEntry}
+              onPalletCountChange={onPalletCountChange}
+              onApplyPallet={onApplyPallet}
+              onResetPallet={onResetPallet}
             />
           ))}
         </div>
@@ -908,7 +1251,7 @@ function AddCellPanel({ onSave, onCancel }) {
       </Field>
       <div className="flex gap-2 mt-3">
         <button
-          onClick={() => { if (name.trim()) onSave({ id: genId('cell'), name: name.trim(), machines: [] }); }}
+          onClick={() => { if (name.trim()) onSave({ id: genId('cell'), name: name.trim(), blockPreset: '6cc', machines: [] }); }}
           disabled={!name.trim()}
           className="flex items-center gap-1.5 justify-center"
           style={{ flex: 1, background: name.trim() ? C.accent : C.border, color: name.trim() ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'default' }}
@@ -1037,51 +1380,57 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
             )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', columnGap: 8, rowGap: 3, marginBottom: 14, alignItems: 'center' }}>
-              <div />
-              <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
-              <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
+              <div style={{ gridRow: 1, gridColumn: 1 }} />
+              <div style={{ gridRow: 1, gridColumn: 2, fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
+              <div style={{ gridRow: 1, gridColumn: 3, fontSize: 10, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
+
+              {/* Colunas inteiras em blocos separados (não linha por linha) —
+                  assim a setinha "próximo" do teclado numérico desce dentro
+                  da mesma coluna que você está preenchendo, em vez de pular
+                  pra coluna vizinha. */}
+              {localRows.map((row, idx) => (
+                <div key={`slot-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 1, fontFamily: MONO, fontSize: 13, color: C.text, borderTop: `1px solid ${C.border}`, paddingTop: 8, alignSelf: 'start' }}>
+                  {row.slot}
+                  {row.opName && <div style={{ fontSize: 8.5, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
+                </div>
+              ))}
 
               {localRows.map((row, idx) => (
-                <React.Fragment key={row.toolId}>
-                  <div style={{ fontFamily: MONO, fontSize: 13, color: C.text, borderTop: `1px solid ${C.border}`, paddingTop: 8, alignSelf: 'start' }}>
-                    {row.slot}
-                    {row.opName && <div style={{ fontSize: 8.5, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
-                  </div>
+                <div key={`vu-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 2, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                  {row.isRoutine ? (
+                    <div style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>—</div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
+                        <TextInput
+                          inputMode="decimal"
+                          value={row.newVidaUtil}
+                          placeholder="—"
+                          onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
+                          style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
+                    </>
+                  )}
+                </div>
+              ))}
 
-                  <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                    {row.isRoutine ? (
-                      <div style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>—</div>
-                    ) : (
-                      <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
-                          <TextInput
-                            inputMode="decimal"
-                            value={row.newVidaUtil}
-                            placeholder="—"
-                            onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
-                            style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
-                          />
-                        </div>
-                        <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
-                      </>
-                    )}
+              {localRows.map((row, idx) => (
+                <div key={`va-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 3, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
+                    <TextInput
+                      inputMode="decimal"
+                      value={row.newVidaAtual}
+                      placeholder="—"
+                      onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
+                      style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
+                    />
                   </div>
-
-                  <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
-                      <TextInput
-                        inputMode="decimal"
-                        value={row.newVidaAtual}
-                        placeholder="—"
-                        onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
-                        style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
-                      />
-                    </div>
-                    <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
-                  </div>
-                </React.Fragment>
+                  <div style={{ fontSize: 9, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
+                </div>
               ))}
             </div>
 
@@ -1118,9 +1467,9 @@ export default function App() {
   const [addingCell, setAddingCell] = useState(false);
   const [ocrModal, setOcrModal] = useState(null);
   const [photoBusyMachineId, setPhotoBusyMachineId] = useState(null);
+  const [photoBusyKind, setPhotoBusyKind] = useState(null);
+  const [pendingCrop, setPendingCrop] = useState(null); // { machineId, kind, file }
   const [editUnlocked, setEditUnlocked] = useState(false);
-  const fileInputRef = useRef(null);
-  const pendingMachineId = useRef(null);
 
   const persist = useCallback((updater) => {
     setCells((prev) => {
@@ -1183,9 +1532,28 @@ export default function App() {
       machines: c.machines.map((m) => ({ ...m, operations: m.operations.filter((o) => o.id !== opId) })),
     })));
   }
-  function renameOperation(opId, name) {
+  function renameOperation(opId, name, pallet) {
     if (!name.trim()) return;
-    persist((prev) => updateOperationById(prev, opId, (o) => ({ ...o, name: name.trim() })));
+    persist((prev) => {
+      let next = updateOperationById(prev, opId, (o) => ({ ...o, name: name.trim(), pallet: pallet ?? o.pallet ?? null }));
+      if (pallet === 1 || pallet === 2) {
+        // Com exatamente 2 operações na máquina, definir o pallet de uma
+        // já resolve a outra sozinha (só existem 2 pallets possíveis).
+        next.forEach((c) => {
+          c.machines.forEach((m) => {
+            const inThisMachine = m.operations.some((o) => o.id === opId);
+            if (inThisMachine && m.operations.length === 2) {
+              const other = m.operations.find((o) => o.id !== opId);
+              if (other) {
+                const complementary = pallet === 1 ? 2 : 1;
+                next = updateOperationById(next, other.id, (o) => ({ ...o, pallet: complementary }));
+              }
+            }
+          });
+        });
+      }
+      return next;
+    });
   }
 
   function addTool(opId, tool) {
@@ -1198,9 +1566,53 @@ export default function App() {
     persist((prev) => updateOperationById(prev, opId, (o) => ({ ...o, tools: o.tools.filter((t) => t.id !== toolId) })));
   }
 
-  function triggerPhoto(machineId) {
-    pendingMachineId.current = machineId;
-    fileInputRef.current?.click();
+  // Preset de bloco (4cc/6cc) da célula: sobrescreve o desgaste/peça de
+  // TODAS as ferramentas dela de uma vez — um jeito rápido de trocar
+  // quando o tipo de bloco rodado muda.
+  function setBlockPreset(cellId, preset) {
+    const desgaste = preset === '4cc' ? 1 : 1.5;
+    persist((prev) => updateCellById(prev, cellId, (c) => ({
+      ...c,
+      blockPreset: preset,
+      machines: c.machines.map((m) => ({
+        ...m,
+        operations: m.operations.map((o) => ({
+          ...o,
+          tools: o.tools.map((t) => ({ ...t, desgastePeca: desgaste })),
+        })),
+      })),
+    })));
+  }
+
+  function setPalletCount(machineId, pallet, count) {
+    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, palletCounts: { ...(m.palletCounts || {}), [pallet]: count } })));
+  }
+  function resetPalletCount(machineId, pallet) {
+    setPalletCount(machineId, pallet, 0);
+  }
+  // Soma "desgaste x peças" na vida atual de toda ferramenta cujo
+  // operação pertence a esse pallet, e zera o contador — pra atualizar
+  // sem precisar ir até o painel de novo.
+  function applyPalletCount(machineId, pallet) {
+    persist((prev) => updateMachineById(prev, machineId, (m) => {
+      const count = (m.palletCounts || {})[pallet] || 0;
+      if (count <= 0) return m;
+      return {
+        ...m,
+        palletCounts: { ...(m.palletCounts || {}), [pallet]: 0 },
+        operations: m.operations.map((o) => {
+          if (o.pallet !== pallet) return o;
+          return {
+            ...o,
+            tools: o.tools.map((t) => {
+              const desg = parseFloat(t.desgastePeca) || 0;
+              if (!desg) return t;
+              return { ...t, vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * count, lastUpdated: new Date().toISOString() };
+            }),
+          };
+        }),
+      };
+    }));
   }
 
   function findMachine(cellsList, machineId) {
@@ -1224,73 +1636,98 @@ export default function App() {
     return Math.abs(n - o) > Math.max(30, o * 0.5);
   }
 
-  async function handleFileChange(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    const machineId = pendingMachineId.current;
-    if (!file || !machineId) return;
+  // Monta as linhas da tela de conferência pra TODAS as ferramentas de
+  // uma máquina (todas as operações juntas). readingByNum vazio = modo
+  // manual, sem nenhuma leitura de OCR (usado pelo "Adicionar manualmente").
+  function buildRowsForMachine(machine, readingByNum) {
+    const allTools = [];
+    machine.operations.forEach((op) => {
+      op.tools.forEach((t) => allTools.push({ tool: t, opName: op.name }));
+    });
+
+    const rows = allTools.map(({ tool: t, opName }) => {
+      const atualNum = slotToAtualNum(t.slot);
+      const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
+      const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
+      const limiteReading = limiteNum !== null ? readingByNum[limiteNum] : undefined;
+
+      let vidaAtualConfidence = atualReading ? atualReading.confidence : 'missing';
+      if (atualReading && isImplausibleJump(t.vidaAtual, atualReading.value)) {
+        vidaAtualConfidence = 'low';
+      }
+
+      let vidaUtilConfidence = limiteReading ? limiteReading.confidence : 'missing';
+      if (limiteReading && !t.isRoutine) {
+        const oldVU = parseFloat(t.vidaUtil);
+        if (!isNaN(oldVU) && oldVU > 0 && Math.abs(limiteReading.value - oldVU) > 0.01) {
+          // vida útil quase nunca muda depois de cadastrada — qualquer
+          // diferença aqui merece conferência, mesmo com confiança alta.
+          vidaUtilConfidence = 'low';
+        }
+      }
+
+      return {
+        toolId: t.id,
+        slot: t.slot,
+        opName,
+        isRoutine: t.isRoutine,
+        oldVidaAtual: t.vidaAtual,
+        newVidaAtual: atualReading ? String(atualReading.value) : '',
+        vidaAtualConfidence,
+        oldVidaUtil: t.vidaUtil,
+        newVidaUtil: limiteReading ? String(limiteReading.value) : '',
+        vidaUtilConfidence,
+      };
+    });
+    rows.sort((a, b) => compareSlots(a.slot, b.slot));
+    return rows;
+  }
+
+  // Chamado pelos botões de câmera/galeria de cada linha (vida útil ou
+  // vida atual) — só guarda o arquivo e abre a tela de recorte. O OCR só
+  // roda depois que o recorte for confirmado (processCroppedPhoto).
+  function onPhotoFile(machineId, kind, file) {
+    setPendingCrop({ machineId, kind, file });
+  }
+
+  function cancelCrop() {
+    setPendingCrop(null);
+  }
+
+  async function processCroppedPhoto(canvas) {
+    const { machineId, kind } = pendingCrop;
+    setPendingCrop(null);
     const found = findMachine(cells, machineId);
     if (!found) return;
     const machineLabel = `${found.cell.name} · ${found.machine.name}`;
+    const kindLabel = kind === 'util' ? 'vida útil' : 'vida atual';
 
     setPhotoBusyMachineId(machineId);
-    setOcrModal({ machineId, machineLabel, status: 'loading', rows: [] });
+    setPhotoBusyKind(kind);
+    setOcrModal({ machineId, machineLabel: `${machineLabel} · foto de ${kindLabel}`, status: 'loading', rows: [] });
 
     try {
-      const readings = await readPanelPhoto(file);
+      const readings = await readPanelPhoto(canvas);
       const readingByNum = {};
       readings.forEach((r) => { readingByNum[r.num] = r; });
-
-      // Uma foto só (#800-849 ou #900-949) cobre TODAS as operações
-      // dessa máquina, já que essas variáveis pertencem ao controlador,
-      // não a uma operação específica — por isso junta tudo aqui.
-      const allTools = [];
-      found.machine.operations.forEach((op) => {
-        op.tools.forEach((t) => allTools.push({ tool: t, opName: op.name }));
-      });
-
-      const rows = allTools.map(({ tool: t, opName }) => {
-        const atualNum = slotToAtualNum(t.slot);
-        const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
-        const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
-        const limiteReading = limiteNum !== null ? readingByNum[limiteNum] : undefined;
-
-        let vidaAtualConfidence = atualReading ? atualReading.confidence : 'missing';
-        if (atualReading && isImplausibleJump(t.vidaAtual, atualReading.value)) {
-          vidaAtualConfidence = 'low';
-        }
-
-        let vidaUtilConfidence = limiteReading ? limiteReading.confidence : 'missing';
-        if (limiteReading && !t.isRoutine) {
-          const oldVU = parseFloat(t.vidaUtil);
-          if (!isNaN(oldVU) && oldVU > 0 && Math.abs(limiteReading.value - oldVU) > 0.01) {
-            // vida útil quase nunca muda depois de cadastrada — qualquer
-            // diferença aqui merece conferência, mesmo com confiança alta.
-            vidaUtilConfidence = 'low';
-          }
-        }
-
-        return {
-          toolId: t.id,
-          slot: t.slot,
-          opName,
-          isRoutine: t.isRoutine,
-          oldVidaAtual: t.vidaAtual,
-          newVidaAtual: atualReading ? String(atualReading.value) : '',
-          vidaAtualConfidence,
-          oldVidaUtil: t.vidaUtil,
-          newVidaUtil: limiteReading ? String(limiteReading.value) : '',
-          vidaUtilConfidence,
-        };
-      });
-      rows.sort((a, b) => compareSlots(a.slot, b.slot));
-
+      const rows = buildRowsForMachine(found.machine, readingByNum);
       setOcrModal({ machineId, machineLabel, status: 'review', rows });
     } catch (err) {
       setOcrModal({ machineId, machineLabel, status: 'error', rows: [], error: err.message });
     } finally {
       setPhotoBusyMachineId(null);
+      setPhotoBusyKind(null);
     }
+  }
+
+  // "Adicionar manualmente": mesma tela de conferência, mas sem nenhuma
+  // leitura de foto — todos os campos começam em branco pra digitar.
+  function openManualEntry(machineId) {
+    const found = findMachine(cells, machineId);
+    if (!found) return;
+    const machineLabel = `${found.cell.name} · ${found.machine.name}`;
+    const rows = buildRowsForMachine(found.machine, {});
+    setOcrModal({ machineId, machineLabel, status: 'review', rows });
   }
 
   function saveOcrRows(rows) {
@@ -1322,9 +1759,10 @@ export default function App() {
   }
 
   function retakePhoto() {
-    const machineId = ocrModal?.machineId;
+    // Fecha e deixa o usuário tocar de novo no botão de câmera/galeria
+    // que quiser — como agora são 4 gatilhos possíveis (útil/atual x
+    // câmera/galeria), não dá pra "adivinhar" qual repetir sozinho.
     setOcrModal(null);
-    if (machineId) triggerPhoto(machineId);
   }
 
   return (
@@ -1399,13 +1837,26 @@ export default function App() {
             onAddTool={addTool}
             onDeleteOp={deleteOperation}
             onRenameOp={renameOperation}
-            onPhoto={triggerPhoto}
+            onPhotoFile={onPhotoFile}
             photoBusyMachineId={photoBusyMachineId}
+            photoBusyKind={photoBusyKind}
+            onManualEntry={openManualEntry}
+            onPalletCountChange={setPalletCount}
+            onApplyPallet={applyPalletCount}
+            onResetPallet={resetPalletCount}
+            onSetBlockPreset={setBlockPreset}
           />
         ))}
       </div>
 
-      <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
+      {pendingCrop && (
+        <CropModal
+          file={pendingCrop.file}
+          title={pendingCrop.kind === 'util' ? 'Vida útil (#800-849)' : 'Vida atual (#900-949)'}
+          onConfirm={processCroppedPhoto}
+          onCancel={cancelCrop}
+        />
+      )}
 
       {ocrModal && <OcrModal state={ocrModal} onClose={() => setOcrModal(null)} onRetake={retakePhoto} onSave={saveOcrRows} />}
     </div>

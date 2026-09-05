@@ -1,13 +1,15 @@
 import { createWorker } from 'tesseract.js';
 
-// O worker é reaproveitado entre leituras (evita recarregar o modelo
-// toda hora). Ele baixa o modelo de idioma (~10-15MB) da internet na
-// primeira leitura; depois disso o service worker mantém em cache.
-let workerPromise = null;
+// Dois workers separados: um afinado pra tabela de números (só dígitos,
+// leitura esparsa) e outro pra texto livre (comentário do programa CNC,
+// com letras e pontuação) — cada um com a configuração que funciona
+// melhor pro seu tipo de conteúdo.
+let digitWorkerPromise = null;
+let textWorkerPromise = null;
 
-function getWorker() {
-  if (!workerPromise) {
-    workerPromise = (async () => {
+function getDigitWorker() {
+  if (!digitWorkerPromise) {
+    digitWorkerPromise = (async () => {
       const worker = await createWorker('eng');
       await worker.setParameters({
         // A tela só mostra dígitos, "#" e ".", então restringir o
@@ -20,33 +22,50 @@ function getWorker() {
       return worker;
     })();
   }
-  return workerPromise;
+  return digitWorkerPromise;
+}
+
+function getTextWorker() {
+  if (!textWorkerPromise) {
+    textWorkerPromise = (async () => {
+      const worker = await createWorker('eng');
+      await worker.setParameters({
+        // PSM 6 = bloco uniforme de texto — bom pra linhas de comentário
+        // do programa, uma abaixo da outra.
+        tessedit_pageseg_mode: '6',
+      });
+      return worker;
+    })();
+  }
+  return textWorkerPromise;
+}
+
+async function loadImageElement(input) {
+  const isCanvas = typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement;
+  const dataUrl = isCanvas
+    ? input.toDataURL('image/jpeg', 0.95)
+    : await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('read_failed'));
+      reader.readAsDataURL(input);
+    });
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image_load_failed'));
+    img.src = dataUrl;
+  });
 }
 
 /**
  * Redimensiona e prepara a foto (escala de cinza + esticar o contraste)
- * antes de mandar pro OCR. Isso ajuda bastante com reflexo de luz e
- * fotos meio escuras/desbotadas.
- *
- * (Chegamos a testar binarizar a imagem em preto/branco puro aqui, mas
- * como as fotos do painel têm reflexo bem desigual de um lado a outro,
- * um único corte de brilho pra imagem inteira piorou a leitura em vez
- * de ajudar — voltamos pra só escala de cinza + contraste.)
+ * antes de mandar pro OCR. Aceita tanto um File (foto original) quanto
+ * um HTMLCanvasElement (já recortado na tela de recorte).
  */
-async function preprocess(file, maxDim = 1800) {
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('read_failed'));
-    reader.readAsDataURL(file);
-  });
-
-  const img = await new Promise((resolve, reject) => {
-    const el = new Image();
-    el.onload = () => resolve(el);
-    el.onerror = () => reject(new Error('image_load_failed'));
-    el.src = dataUrl;
-  });
+async function preprocess(input, maxDim = 1800) {
+  const img = await loadImageElement(input);
 
   let w = img.width;
   let h = img.height;
@@ -93,9 +112,10 @@ function closeEnoughSameLine(a, b, maxGap) {
 
 /**
  * Às vezes o Tesseract quebra um número em dois pedaços (ex: "2030."
- * vira "20" + "30."). Todo valor nessa tela termina com ".", então dá
- * pra usar isso como âncora: junta fragmentos vizinhos na mesma linha
- * até achar o ponto final.
+ * vira "20" + "30.", ou "70.5" vira "70." + "5"). Continua juntando
+ * fragmentos vizinhos na mesma linha até formar um número decimal
+ * completo (dígitos após o ponto) ou até não haver mais nada por perto
+ * pra juntar.
  */
 function mergeAdjacentValueFragments(tokens) {
   const sorted = [...tokens].sort((a, b) => {
@@ -113,7 +133,7 @@ function mergeAdjacentValueFragments(tokens) {
     if (!cur.text.startsWith('#')) {
       while (
         i < sorted.length &&
-        !cur.text.endsWith('.') &&
+        !/\.\d+$/.test(cur.text) && // já tem casa decimal? então já está completo
         !sorted[i].text.startsWith('#') &&
         /^\d+\.?$/.test(sorted[i].text) &&
         closeEnoughSameLine(cur, sorted[i], 14)
@@ -201,11 +221,39 @@ function parseRows(words) {
 /**
  * Lê uma foto da tela "VARIAVEL MACRO" e devolve os pares
  * { num, value, confidence } encontrados. num é o número após o "#".
+ * Aceita um File (foto original) ou um HTMLCanvasElement (recortado).
  */
-export async function readPanelPhoto(file) {
-  const canvas = await preprocess(file);
-  const worker = await getWorker();
+export async function readPanelPhoto(input) {
+  const canvas = await preprocess(input);
+  const worker = await getDigitWorker();
   const { data } = await worker.recognize(canvas);
   const words = (data.words || []).map((w) => ({ text: w.text, confidence: w.confidence, bbox: w.bbox }));
   return parseRows(words);
+}
+
+/**
+ * Lê uma foto da tela do PROGRAMA (comentários tipo "(T38 BMAN-900
+ * BROCA TOPO...)") e devolve os pares { slot, bman } encontrados, na
+ * ordem em que aparecem. Texto livre é mais difícil de acertar 100% do
+ * que a grade de números — trate como um rascunho pra conferir, não
+ * como leitura garantida.
+ */
+export async function readProgramPhoto(input) {
+  const canvas = await preprocess(input, 2000);
+  const worker = await getTextWorker();
+  const { data } = await worker.recognize(canvas);
+  const lines = (data.text || '').split('\n');
+
+  const seen = new Set();
+  const results = [];
+  lines.forEach((line) => {
+    const m = line.match(/T\s?(\d{1,3})\D{0,15}?([A-Za-z]{3,6}-?\d{2,5})/);
+    if (!m) return;
+    const slot = `T${m[1].padStart(2, '0')}`;
+    if (seen.has(slot)) return;
+    const bman = m[2].toUpperCase().replace(/^([A-Z]+)(\d)/, '$1-$2');
+    seen.add(slot);
+    results.push({ slot, bman });
+  });
+  return results;
 }
