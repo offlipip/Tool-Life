@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import {
   Plus, Minus, ChevronDown, ChevronRight, Camera, Image as ImageIcon, Pencil, Trash2, Check, X,
-  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon,
+  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon, ArrowLeft,
 } from 'lucide-react';
 import { readPanelPhoto, readProgramPhoto } from './ocr.js';
 import { loadData, saveData } from './storage.js';
@@ -141,6 +141,7 @@ function cloneOperationsForNewMachine(operations) {
   return operations.map((op) => ({
     id: genId('op'),
     name: op.name,
+    pallet: op.pallet ?? null,
     tools: op.tools.map((t) => ({ ...t, id: genId('tool'), vidaAtual: 0, lastUpdated: null })),
   }));
 }
@@ -1015,6 +1016,7 @@ function MachineCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAddOp, setShowAddOp] = useState(false);
   const [showPanelRead, setShowPanelRead] = useState(false);
+  const [showCounter, setShowCounter] = useState(false);
 
   const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
   const hasOps = machine.operations.length > 0;
@@ -1044,22 +1046,30 @@ function MachineCard({
         <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
           {/* Uso diário em primeiro lugar: contador de peças usinadas */}
           {pallets.length > 0 && (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px 6px', marginBottom: 8 }}>
-              <div style={{ fontSize: 13, color: C.textDim, padding: '9px 0 4px', textAlign: 'center', fontWeight: 600 }}>
-                Peças usinadas
-              </div>
-              <div style={{ fontSize: 11, color: C.textFaint, textAlign: 'center', paddingBottom: 6 }}>
-                digite a contagem que está no computador agora
-              </div>
-              {pallets.map((p) => (
-                <PalletCounterRow
-                  key={p}
-                  pallet={p}
-                  lastCount={(machine.palletLastCount || {})[p] || 0}
-                  onApply={(amount, newCount) => onApplyPallet(machine.id, p, amount, newCount)}
-                  onReset={() => onResetPallet(machine.id, p)}
-                />
-              ))}
+            <div style={{ marginBottom: 8 }}>
+              <button
+                onClick={() => setShowCounter((v) => !v)}
+                className="flex items-center gap-1.5 justify-center w-full"
+                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
+              >
+                {showCounter ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Contador de peças
+              </button>
+              {showCounter && (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px 6px', marginTop: 6 }}>
+                  <div style={{ fontSize: 11.5, color: C.textFaint, textAlign: 'center', padding: '8px 0 6px' }}>
+                    digite a contagem que está no computador agora
+                  </div>
+                  {pallets.map((p) => (
+                    <PalletCounterRow
+                      key={p}
+                      pallet={p}
+                      lastCount={(machine.palletLastCount || {})[p] || 0}
+                      onApply={(amount, newCount) => onApplyPallet(machine.id, p, amount, newCount)}
+                      onReset={() => onResetPallet(machine.id, p)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1189,8 +1199,47 @@ function AddMachinePanel({ onSave, onCancel, otherMachines }) {
 /* Cell card (nível 1 — topo)                                             */
 /* ---------------------------------------------------------------------- */
 
-function CellCard({
-  cell, expanded, onToggle, onRename, onDelete, otherMachines,
+/* Item da lista de células — cartão compacto que "entra" na célula ao
+   tocar, em vez de expandir tudo aninhado na mesma tela. */
+function CellListItem({ cell, onOpen }) {
+  const rows = flattenToolRows([cell])
+    .map((r) => computeRemaining(r.tool))
+    .filter((r) => r !== null);
+  const minRemaining = rows.length ? Math.min(...rows) : null;
+  const status = statusFor(minRemaining);
+
+  return (
+    <div
+      onClick={onOpen}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 11, padding: '14px 13px', cursor: 'pointer',
+        background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, marginBottom: 9,
+      }}
+    >
+      <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <Layers size={16} color={C.accent} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{cell.name}</div>
+        <div style={{ fontSize: 12, color: C.textFaint }}>
+          {cell.machines.length} {cell.machines.length === 1 ? 'máquina' : 'máquinas'} · bloco {cell.blockPreset || '6cc'}
+        </div>
+      </div>
+      {minRemaining !== null && (
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: STATUS_COLOR[status] }}>{minRemaining}</div>
+          <div style={{ fontSize: 10, color: C.textFaint }}>pç</div>
+        </div>
+      )}
+      <ChevronRight size={18} color={C.textFaint} />
+    </div>
+  );
+}
+
+/* Tela de uma célula: cabeçalho com voltar, resumo só desta célula e
+   a lista de máquinas dela. */
+function CellDetail({
+  cell, onBack, onRename, onDelete, otherMachines,
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
@@ -1204,101 +1253,119 @@ function CellCard({
   const preset = cell.blockPreset || '6cc';
 
   return (
-    <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, marginBottom: 10, overflow: 'hidden' }}>
-      <NodeHeader
-        icon={<Layers size={15} color={C.accent} />}
-        expanded={expanded}
-        onToggle={onToggle}
-        name={cell.name}
-        subtitle={`${cell.machines.length} máquina${cell.machines.length !== 1 ? 's' : ''} · bloco padrão ${preset}`}
-        renaming={renaming}
-        nameDraft={nameDraft}
-        setNameDraft={setNameDraft}
-        onRenameStart={() => setRenaming(true)}
-        onRenameCommit={() => { onRename(nameDraft); setRenaming(false); }}
-        onRenameCancel={() => { setNameDraft(cell.name); setRenaming(false); }}
-        onDeleteStart={() => setConfirmDelete(true)}
-      />
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14 }}>
+        <IconBtn title="Voltar" onClick={onBack}><ArrowLeft size={19} /></IconBtn>
+        {renaming ? (
+          <input
+            autoFocus
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { onRename(nameDraft); setRenaming(false); } }}
+            style={{ flex: 1, background: C.surfaceRaised, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '6px 9px', color: C.text, fontSize: 16 }}
+          />
+        ) : (
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{cell.name}</div>
+            <div style={{ fontSize: 12, color: C.textFaint }}>
+              {cell.machines.length} {cell.machines.length === 1 ? 'máquina' : 'máquinas'} · bloco {preset}
+            </div>
+          </div>
+        )}
+        {renaming ? (
+          <div className="flex items-center">
+            <IconBtn onClick={() => { onRename(nameDraft); setRenaming(false); }}><Check size={16} color={C.ok} /></IconBtn>
+            <IconBtn onClick={() => { setNameDraft(cell.name); setRenaming(false); }}><X size={16} /></IconBtn>
+          </div>
+        ) : unlocked && (
+          <div className="flex items-center">
+            <IconBtn title="Renomear" onClick={() => setRenaming(true)}><Pencil size={15} /></IconBtn>
+            <IconBtn title="Excluir" danger onClick={() => setConfirmDelete(true)}><Trash2 size={15} /></IconBtn>
+          </div>
+        )}
+      </div>
 
       {confirmDelete && (
-        <DeleteConfirmBar label={`Excluir "${cell.name}" e tudo dentro dela?`} onCancel={() => setConfirmDelete(false)} onConfirm={onDelete} />
-      )}
-
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
-          {unlocked && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 5 }}>
-                Bloco padrão desta célula (define o desgaste/peça de todas as ferramentas)
-              </div>
-              <div className="flex gap-2">
-                {['4cc', '6cc'].map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => onSetBlockPreset(cell.id, p)}
-                    style={{
-                      flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-                      background: preset === p ? C.accentSoft : 'transparent',
-                      color: preset === p ? C.accent : C.textDim,
-                      border: `1px solid ${preset === p ? C.accent : C.border}`,
-                    }}
-                  >
-                    {p} {p === '4cc' ? '(desgaste 1)' : '(desgaste 1.5)'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {unlocked && !showAddMachine && (
-            <button
-              onClick={() => setShowAddMachine(true)}
-              className="flex items-center gap-1.5 justify-center w-full mb-2"
-              style={{ background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 7, padding: '9px 0', fontSize: 12.5, cursor: 'pointer' }}
-            >
-              <Plus size={14} /> Nova máquina
-            </button>
-          )}
-          {showAddMachine && (
-            <AddMachinePanel
-              otherMachines={otherMachines}
-              onSave={(machine) => { onAddMachine(machine); setShowAddMachine(false); }}
-              onCancel={() => setShowAddMachine(false)}
-            />
-          )}
-
-          {cell.machines.length === 0 && !showAddMachine && (
-            <div style={{ fontSize: 12.5, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
-              {unlocked ? 'Nenhuma máquina cadastrada nesta célula ainda.' : 'Sem máquinas. Destrave o cadeado para cadastrar.'}
-            </div>
-          )}
-
-          {cell.machines.map((m) => (
-            <MachineCard
-              key={m.id}
-              machine={m}
-              expanded={expandedMachineId === m.id}
-              onToggle={() => onToggleMachine(m.id)}
-              onRename={(name) => onRenameMachine(m.id, name)}
-              onDelete={() => onDeleteMachine(m.id)}
-              onAddOperation={(op) => onAddOperation(m.id, op)}
-              onToggleOp={onToggleOp}
-              expandedOpId={expandedOpId}
-              onUpdateTool={onUpdateTool}
-              onDeleteTool={onDeleteTool}
-              onAddTool={onAddTool}
-              onDeleteOp={onDeleteOp}
-              onRenameOp={onRenameOp}
-              onPhotoFile={onPhotoFile}
-              photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
-              onManualEntry={onManualEntry}
-              onApplyPallet={onApplyPallet}
-              onResetPallet={onResetPallet}
-              blockPreset={preset}
-            />
-          ))}
+        <div style={{ borderRadius: 8, overflow: 'hidden', marginBottom: 10, border: `1px solid ${C.border}` }}>
+          <DeleteConfirmBar label={`Excluir "${cell.name}" e tudo dentro dela?`} onCancel={() => setConfirmDelete(false)} onConfirm={onDelete} />
         </div>
       )}
+
+      <SummaryStrip cells={[cell]} hideCellName />
+
+      {unlocked && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 5 }}>
+            Bloco padrão desta célula (define o desgaste/peça de todas as ferramentas)
+          </div>
+          <div className="flex gap-2">
+            {['4cc', '6cc'].map((p) => (
+              <button
+                key={p}
+                onClick={() => onSetBlockPreset(cell.id, p)}
+                style={{
+                  flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+                  background: preset === p ? C.accentSoft : 'transparent',
+                  color: preset === p ? C.accent : C.textDim,
+                  border: `1px solid ${preset === p ? C.accent : C.border}`,
+                }}
+              >
+                {p} {p === '4cc' ? '(desgaste 1)' : '(desgaste 1.5)'}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Máquinas</div>
+
+      {unlocked && !showAddMachine && (
+        <button
+          onClick={() => setShowAddMachine(true)}
+          className="flex items-center gap-1.5 justify-center w-full mb-2"
+          style={{ background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 7, padding: '9px 0', fontSize: 12.5, cursor: 'pointer' }}
+        >
+          <Plus size={14} /> Nova máquina
+        </button>
+      )}
+      {showAddMachine && (
+        <AddMachinePanel
+          otherMachines={otherMachines}
+          onSave={(machine) => { onAddMachine(machine); setShowAddMachine(false); }}
+          onCancel={() => setShowAddMachine(false)}
+        />
+      )}
+
+      {cell.machines.length === 0 && !showAddMachine && (
+        <div style={{ fontSize: 12.5, color: C.textFaint, padding: '10px 0', textAlign: 'center' }}>
+          {unlocked ? 'Nenhuma máquina cadastrada nesta célula ainda.' : 'Sem máquinas. Destrave o cadeado para cadastrar.'}
+        </div>
+      )}
+
+      {cell.machines.map((m) => (
+        <MachineCard
+          key={m.id}
+          machine={m}
+          expanded={expandedMachineId === m.id}
+          onToggle={() => onToggleMachine(m.id)}
+          onRename={(name) => onRenameMachine(m.id, name)}
+          onDelete={() => onDeleteMachine(m.id)}
+          onAddOperation={(op) => onAddOperation(m.id, op)}
+          onToggleOp={onToggleOp}
+          expandedOpId={expandedOpId}
+          onUpdateTool={onUpdateTool}
+          onDeleteTool={onDeleteTool}
+          onAddTool={onAddTool}
+          onDeleteOp={onDeleteOp}
+          onRenameOp={onRenameOp}
+          onPhotoFile={onPhotoFile}
+          photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
+          onManualEntry={onManualEntry}
+          onApplyPallet={onApplyPallet}
+          onResetPallet={onResetPallet}
+          blockPreset={preset}
+        />
+      ))}
     </div>
   );
 }
@@ -1336,7 +1403,7 @@ function AddCellPanel({ onSave, onCancel }) {
 /* Summary strip                                                          */
 /* ---------------------------------------------------------------------- */
 
-function SummaryStrip({ cells }) {
+function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName = false }) {
   const rows = flattenToolRows(cells)
     .map((r) => ({ ...r, remaining: computeRemaining(r.tool) }))
     .filter((r) => r.remaining !== null)
@@ -1349,7 +1416,7 @@ function SummaryStrip({ cells }) {
 
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Mais próximas de quebrar</div>
+      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>{title}</div>
       <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.border}` }}>
         {rows.map((r, i) => {
           const status = statusFor(r.remaining);
@@ -1365,7 +1432,7 @@ function SummaryStrip({ cells }) {
               <StatusDot status={status} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, color: C.text, fontFamily: MONO }}>{r.tool.slot}</div>
-                <div style={{ fontSize: 11.5, color: C.textFaint }}>{r.cellName} · {r.machineName} · {r.opName}</div>
+                <div style={{ fontSize: 11.5, color: C.textFaint }}>{hideCellName ? '' : `${r.cellName} · `}{r.machineName} · {r.opName}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: STATUS_COLOR[status] }}>{r.remaining}</div>
@@ -1537,6 +1604,8 @@ export default function App() {
   const [pendingCrop, setPendingCrop] = useState(null); // { machineId, kind, file }
   const [editUnlocked, setEditUnlocked] = useState(false);
 
+  const selectedCell = cells.find((c) => c.id === expandedCellId) || null;
+
   const persist = useCallback((updater) => {
     setCells((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -1545,14 +1614,6 @@ export default function App() {
     });
   }, []);
 
-  function toggleCell(cellId) {
-    setExpandedCellId((cur) => {
-      if (cur === cellId) return null;
-      setExpandedMachineId(null);
-      setExpandedOpId(null);
-      return cellId;
-    });
-  }
   function toggleMachine(machineId) {
     setExpandedMachineId((cur) => {
       if (cur === machineId) return null;
@@ -1567,7 +1628,7 @@ export default function App() {
   function addCell(cell) {
     persist((prev) => [...prev, cell]);
     setAddingCell(false);
-    setExpandedCellId(cell.id);
+    setExpandedCellId(cell.id); // entra direto na célula recém-criada
   }
   function deleteCell(cellId) {
     persist((prev) => prev.filter((c) => c.id !== cellId));
@@ -1870,46 +1931,18 @@ export default function App() {
           </button>
         </div>
 
-        <SummaryStrip cells={cells} />
-
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ fontSize: 12, color: C.textDim }}>Células</span>
-        </div>
-
-        {!addingCell && editUnlocked && (
-          <button
-            onClick={() => setAddingCell(true)}
-            className="flex items-center gap-2"
-            style={{ width: '100%', background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 10, padding: '11px 14px', fontSize: 13.5, marginBottom: 14, cursor: 'pointer' }}
-          >
-            <Plus size={16} /> Cadastrar nova célula
-          </button>
-        )}
-
-        {addingCell && <AddCellPanel onSave={addCell} onCancel={() => setAddingCell(false)} />}
-
-        {cells.length === 0 && !addingCell && (
-          <div style={{ textAlign: 'center', color: C.textFaint, fontSize: 12.5, padding: '20px 10px' }}>
-            {editUnlocked
-              ? 'Nenhuma célula cadastrada. Comece pela célula que você acompanha todo dia — dentro dela você cadastra as máquinas.'
-              : 'Nenhuma célula cadastrada. Destrave o cadeado acima para cadastrar.'}
-          </div>
-        )}
-
-        {cells.map((cell) => (
-          <CellCard
-            key={cell.id}
-            cell={cell}
-            expanded={expandedCellId === cell.id}
-            onToggle={() => toggleCell(cell.id)}
-            onRename={(name) => renameCell(cell.id, name)}
-            onDelete={() => deleteCell(cell.id)}
+        {selectedCell ? (
+          <CellDetail
+            cell={selectedCell}
+            onBack={() => { setExpandedCellId(null); setExpandedMachineId(null); setExpandedOpId(null); }}
+            onRename={(name) => renameCell(selectedCell.id, name)}
+            onDelete={() => { deleteCell(selectedCell.id); setExpandedCellId(null); }}
             otherMachines={flattenMachines(cells)}
-            onAddMachine={(machine) => addMachine(cell.id, machine)}
+            onAddMachine={(machine) => addMachine(selectedCell.id, machine)}
             expandedMachineId={expandedMachineId}
             onToggleMachine={toggleMachine}
             onRenameMachine={renameMachine}
-            onDeleteMachine={(machineId) => deleteMachine(cell.id, machineId)}
+            onDeleteMachine={(machineId) => deleteMachine(selectedCell.id, machineId)}
             expandedOpId={expandedOpId}
             onToggleOp={toggleOp}
             onAddOperation={addOperation}
@@ -1926,7 +1959,39 @@ export default function App() {
             onResetPallet={resetPalletCount}
             onSetBlockPreset={setBlockPreset}
           />
-        ))}
+        ) : (
+          <>
+            <SummaryStrip cells={cells} />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: C.textDim }}>Células</span>
+            </div>
+
+            {!addingCell && editUnlocked && (
+              <button
+                onClick={() => setAddingCell(true)}
+                className="flex items-center gap-2"
+                style={{ width: '100%', background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 10, padding: '11px 14px', fontSize: 13.5, marginBottom: 14, cursor: 'pointer' }}
+              >
+                <Plus size={16} /> Cadastrar nova célula
+              </button>
+            )}
+
+            {addingCell && <AddCellPanel onSave={addCell} onCancel={() => setAddingCell(false)} />}
+
+            {cells.length === 0 && !addingCell && (
+              <div style={{ textAlign: 'center', color: C.textFaint, fontSize: 12.5, padding: '20px 10px' }}>
+                {editUnlocked
+                  ? 'Nenhuma célula cadastrada. Comece pela célula que você acompanha todo dia — dentro dela você cadastra as máquinas.'
+                  : 'Nenhuma célula cadastrada. Destrave o cadeado acima para cadastrar.'}
+              </div>
+            )}
+
+            {cells.map((cell) => (
+              <CellListItem key={cell.id} cell={cell} onOpen={() => setExpandedCellId(cell.id)} />
+            ))}
+          </>
+        )}
       </div>
 
       {pendingCrop && (
