@@ -1,10 +1,10 @@
 import React, { useState, useRef, useCallback } from 'react';
 import {
   Plus, Minus, ChevronDown, ChevronRight, Camera, Image as ImageIcon, Pencil, Trash2, Check, X,
-  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon, ArrowLeft,
+  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon, ArrowLeft, Download, Upload,
 } from 'lucide-react';
 import { readPanelPhoto, readProgramPhoto } from './ocr.js';
-import { loadData, saveData } from './storage.js';
+import { loadData, saveData, exportBackup, importBackup } from './storage.js';
 
 /* ---------------------------------------------------------------------- */
 /* Design tokens                                                          */
@@ -76,9 +76,28 @@ function desgasteForPreset(preset) {
   return preset === '4cc' ? 1 : 1.5;
 }
 
-function computeRemaining(tool) {
+/**
+ * Cada ferramenta guarda um desgaste POR BLOCO (ex: {'6cc':1.5,'4cc':1}),
+ * porque o mesmo T pode gastar diferente dependendo do bloco rodado.
+ * Se ainda não foi calibrado pra esse bloco, usa o chute padrão (1 ou
+ * 1.5) só como ponto de partida.
+ */
+function getToolDesgaste(tool, preset) {
+  const d = tool.desgastePeca;
+  if (d && typeof d === 'object') {
+    const v = d[preset];
+    return (typeof v === 'number' && v > 0) ? v : desgasteForPreset(preset);
+  }
+  return (typeof d === 'number' && d > 0) ? d : desgasteForPreset(preset);
+}
+function isCalibrated(tool, preset) {
+  const d = tool.desgastePeca;
+  return !!(d && typeof d === 'object' && typeof d[preset] === 'number' && d[preset] > 0);
+}
+
+function computeRemaining(tool, preset) {
   if (tool.isRoutine) return null;
-  const desg = parseFloat(tool.desgastePeca);
+  const desg = getToolDesgaste(tool, preset);
   const vu = parseFloat(tool.vidaUtil);
   const va = parseFloat(tool.vidaAtual);
   if (!desg || desg <= 0 || isNaN(vu) || isNaN(va)) return null;
@@ -133,7 +152,7 @@ function flattenMachines(cells) {
 function flattenToolRows(cells) {
   const out = [];
   cells.forEach((c) => c.machines.forEach((m) => m.operations.forEach((o) => o.tools.forEach((t) => {
-    out.push({ cellName: c.name, machineName: m.name, opName: o.name, opId: o.id, tool: t });
+    out.push({ cellName: c.name, machineName: m.name, opName: o.name, opId: o.id, tool: t, preset: c.blockPreset || '6cc' });
   }))));
   return out;
 }
@@ -443,25 +462,32 @@ function PhotoRow({ label, onFile, busy, busyLabel }) {
 /* Tool row (with inline edit)                                            */
 /* ---------------------------------------------------------------------- */
 
-function ToolRow({ tool, onUpdate, onDelete }) {
+function ToolRow({ tool, onUpdate, onDelete, blockPreset }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(tool);
   const [confirmZero, setConfirmZero] = useState(false);
 
-  const remaining = computeRemaining(tool);
+  const remaining = computeRemaining(tool, blockPreset);
   const status = statusFor(remaining);
   const pct = tool.isRoutine ? 100
     : (parseFloat(tool.vidaUtil) > 0
       ? Math.max(0, Math.min(100, 100 - (parseFloat(tool.vidaAtual) / parseFloat(tool.vidaUtil)) * 100))
       : 0);
+  const calibrated = isCalibrated(tool, blockPreset);
+
+  function startEdit() {
+    setDraft({ ...tool, desgastePeca: String(getToolDesgaste(tool, blockPreset)) });
+    setEditing(true);
+  }
 
   function save() {
+    const prevMap = (tool.desgastePeca && typeof tool.desgastePeca === 'object') ? tool.desgastePeca : {};
     onUpdate({
       ...draft,
       vidaUtil: parseFloat(draft.vidaUtil) || 0,
       vidaAtual: parseFloat(draft.vidaAtual) || 0,
-      desgastePeca: parseFloat(draft.desgastePeca) || 0,
+      desgastePeca: { ...prevMap, [blockPreset]: parseFloat(draft.desgastePeca) || desgasteForPreset(blockPreset) },
     });
     setEditing(false);
   }
@@ -487,9 +513,12 @@ function ToolRow({ tool, onUpdate, onDelete }) {
               <TextInput inputMode="decimal" value={draft.vidaUtil} onChange={(e) => setDraft({ ...draft, vidaUtil: e.target.value })} placeholder="480" />
             </Field>
           )}
-          <Field label="Desgaste / peça">
+          <Field label={`Desgaste / peça (bloco ${blockPreset})`}>
             <TextInput inputMode="decimal" value={draft.desgastePeca} onChange={(e) => setDraft({ ...draft, desgastePeca: e.target.value })} placeholder="1.5" />
           </Field>
+        </div>
+        <div style={{ fontSize: 10.5, color: calibrated ? C.textFaint : C.warn, marginTop: -6, marginBottom: 8 }}>
+          {calibrated ? `calibrado pro bloco ${blockPreset}` : `ainda é um chute padrão — não foi calibrado nesse bloco`}
         </div>
         <Field label={draft.isRoutine ? 'Contador atual' : 'Vida atual'}>
           <TextInput inputMode="decimal" value={draft.vidaAtual} onChange={(e) => setDraft({ ...draft, vidaAtual: e.target.value })} placeholder="0" />
@@ -521,7 +550,7 @@ function ToolRow({ tool, onUpdate, onDelete }) {
 
   return (
     <div
-      onClick={() => { if (unlocked) { setDraft(tool); setEditing(true); } }}
+      onClick={() => { if (unlocked) startEdit(); }}
       style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, cursor: unlocked ? 'pointer' : 'default' }}
     >
       <StatusDot status={status} />
@@ -534,6 +563,7 @@ function ToolRow({ tool, onUpdate, onDelete }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
           <span style={{ fontSize: 11.5, color: C.textFaint, fontFamily: MONO }}>
             {fmtNum(tool.vidaAtual)}{!tool.isRoutine && ` / ${fmtNum(tool.vidaUtil)}`}
+            {!tool.isRoutine && !calibrated && <span style={{ color: C.warn }}> · não calibrado</span>}
           </span>
         </div>
       </div>
@@ -640,7 +670,7 @@ function NewToolForm({ onAdd, compact, limiteReadings, blockPreset }) {
       isRoutine: t.isRoutine,
       vidaUtil: t.isRoutine ? 0 : (parseFloat(t.vidaUtil) || 0),
       vidaAtual: parseFloat(t.vidaAtual) || 0,
-      desgastePeca: parseFloat(t.desgastePeca) || desgasteForPreset(blockPreset),
+      desgastePeca: { [blockPreset]: parseFloat(t.desgastePeca) || desgasteForPreset(blockPreset) },
       lastUpdated: null,
     });
     setT(blank);
@@ -674,7 +704,7 @@ function NewToolForm({ onAdd, compact, limiteReadings, blockPreset }) {
             {vuFromPhoto && <span style={{ fontSize: 10, color: C.ok }}>✓ lido da foto — confira</span>}
           </Field>
         )}
-        <Field label="Desgaste / peça">
+        <Field label={`Desgaste / peça (bloco ${blockPreset})`}>
           <TextInput inputMode="decimal" value={t.desgastePeca} onChange={(e) => setT({ ...t, desgastePeca: e.target.value })} placeholder="1.5" />
         </Field>
       </div>
@@ -710,7 +740,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
   const [limiteReadings, setLimiteReadings] = useState(null);
 
   const active = op.tools.filter((t) => !t.isRoutine);
-  const worst = active.map((t) => computeRemaining(t)).filter((r) => r !== null);
+  const worst = active.map((t) => computeRemaining(t, blockPreset)).filter((r) => r !== null);
   const minRemaining = worst.length ? Math.min(...worst) : null;
   const headStatus = statusFor(minRemaining);
 
@@ -786,7 +816,7 @@ function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onA
 
           <div style={{ marginBottom: showAddTool ? 10 : 0 }}>
             {op.tools.map((t) => (
-              <ToolRow key={t.id} tool={t} onUpdate={(patch) => onUpdateTool(t.id, patch)} onDelete={() => onDeleteTool(t.id)} />
+              <ToolRow key={t.id} tool={t} onUpdate={(patch) => onUpdateTool(t.id, patch)} onDelete={() => onDeleteTool(t.id)} blockPreset={blockPreset} />
             ))}
           </div>
 
@@ -875,7 +905,7 @@ function AddOperationPanel({ onSave, onCancel, blockPreset }) {
         .filter((f) => !existingSlots.has(f.slot))
         .map((f) => ({
           id: genId('tool'), slot: f.slot, bman: f.bman, isRoutine: false,
-          vidaUtil: 0, vidaAtual: 0, desgastePeca: desgasteForPreset(blockPreset), lastUpdated: null,
+          vidaUtil: 0, vidaAtual: 0, desgastePeca: { [blockPreset]: desgasteForPreset(blockPreset) }, lastUpdated: null,
         }));
       return [...prev, ...additions];
     });
@@ -999,6 +1029,90 @@ function PalletCounterRow({ pallet, lastCount, onApply, onReset }) {
   );
 }
 
+/* Calibração de desgaste: você marca "início" (guarda a vida atual de
+   cada ferramenta), roda peças normalmente, e ao finalizar informa
+   quantas peças rodaram em cada pallet — o app calcula (fim−início)÷peças
+   por ferramenta e propõe salvar como o desgaste calibrado do bloco. */
+function CalibrationModal({ machine, onClose, onSave }) {
+  const cal = machine.calibration;
+  const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
+  const [pieces, setPieces] = useState(() => Object.fromEntries(pallets.map((p) => [p, ''])));
+
+  const rows = [];
+  machine.operations.forEach((op) => {
+    if (op.pallet !== 1 && op.pallet !== 2) return;
+    op.tools.forEach((t) => {
+      if (t.isRoutine) return;
+      if (!(t.id in cal.snapshot)) return; // cadastrada depois do início, sem como calibrar ainda
+      const n = parseInt(pieces[op.pallet], 10);
+      const valid = !isNaN(n) && n > 0;
+      const startVA = cal.snapshot[t.id];
+      const currentVA = parseFloat(t.vidaAtual) || 0;
+      const computed = valid ? (currentVA - startVA) / n : null;
+      rows.push({ toolId: t.id, slot: t.slot, startVA, currentVA, computed });
+    });
+  });
+  const readyRows = rows.filter((r) => r.computed !== null && r.computed > 0);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 55, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, width: '100%', maxWidth: 480, maxHeight: '86vh', overflowY: 'auto', border: `1px solid ${C.borderLight}`, borderBottom: 'none', padding: 16 }}>
+        <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 14px' }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Finalizar calibração</div>
+        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>
+          bloco {cal.preset} · iniciada {new Date(cal.startedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+        </div>
+
+        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Quantas peças rodaram em cada pallet desde o início?</div>
+        {pallets.map((p) => (
+          <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 13, color: C.text, minWidth: 62 }}>Pallet {p}</span>
+            <TextInput
+              inputMode="numeric"
+              value={pieces[p]}
+              onChange={(e) => setPieces((prev) => ({ ...prev, [p]: e.target.value }))}
+              placeholder="0"
+              style={{ flex: 1 }}
+            />
+          </div>
+        ))}
+
+        <div style={{ fontSize: 11, color: C.textFaint, margin: '14px 0 8px' }}>Valores calculados — confira antes de salvar</div>
+        {rows.length === 0 && (
+          <div style={{ fontSize: 12, color: C.textFaint, padding: '8px 0' }}>
+            Nenhuma ferramenta pra calibrar (confira se as operações têm pallet definido).
+          </div>
+        )}
+        {rows.map((r) => (
+          <div key={r.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
+            <span style={{ fontFamily: MONO, fontSize: 13, color: C.text, minWidth: 44 }}>{r.slot}</span>
+            <span style={{ fontSize: 10.5, color: C.textFaint, flex: 1 }}>{fmtNum(r.startVA)} → {fmtNum(r.currentVA)}</span>
+            <span style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: r.computed === null ? C.textFaint : (r.computed > 0 ? C.ok : C.crit) }}>
+              {r.computed === null ? '—' : r.computed.toFixed(2)}
+            </span>
+          </div>
+        ))}
+        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 8 }}>
+          Um valor negativo ou zero geralmente indica que a ferramenta foi trocada/zerada no meio da calibração — ela não entra ao salvar.
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={() => onSave(readyRows)}
+            disabled={readyRows.length === 0}
+            style={{ flex: 1, background: readyRows.length ? C.accent : C.border, color: readyRows.length ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: readyRows.length ? 'pointer' : 'default' }}
+          >
+            Salvar calibração ({readyRows.length})
+          </button>
+          <button onClick={onClose} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '10px 14px', fontSize: 13.5, cursor: 'pointer' }}>
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Machine card (nível 2 — dentro de uma célula)                          */
 /* ---------------------------------------------------------------------- */
@@ -1009,6 +1123,7 @@ function MachineCard({
   onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusy, onManualEntry,
   onApplyPallet, onResetPallet, blockPreset,
+  onStartCalibration, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1017,6 +1132,7 @@ function MachineCard({
   const [showAddOp, setShowAddOp] = useState(false);
   const [showPanelRead, setShowPanelRead] = useState(false);
   const [showCounter, setShowCounter] = useState(false);
+  const [showCalibrationModal, setShowCalibrationModal] = useState(false);
 
   const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
   const hasOps = machine.operations.length > 0;
@@ -1098,6 +1214,51 @@ function MachineCard({
                 </div>
               )}
             </div>
+          )}
+
+          {/* Calibração de desgaste — só faz sentido com ferramentas já
+              cadastradas, e só quem destrava mexe nisso. */}
+          {unlocked && hasOps && (
+            <div style={{ marginBottom: 8 }}>
+              {machine.calibration ? (
+                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
+                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
+                    Calibrando bloco {machine.calibration.preset} desde{' '}
+                    {new Date(machine.calibration.startedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowCalibrationModal(true)}
+                      style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '7px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      Finalizar
+                    </button>
+                    <button
+                      onClick={() => onCancelCalibration(machine.id)}
+                      style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => onStartCalibration(machine.id)}
+                  className="flex items-center gap-1.5 justify-center w-full"
+                  style={{ background: 'transparent', color: C.textDim, border: `1px dashed ${C.borderLight}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
+                >
+                  <Wrench size={13} /> Calibrar desgaste (bloco {blockPreset})
+                </button>
+              )}
+            </div>
+          )}
+
+          {showCalibrationModal && machine.calibration && (
+            <CalibrationModal
+              machine={machine}
+              onClose={() => setShowCalibrationModal(false)}
+              onSave={(readyRows) => { onFinishCalibration(machine.id, readyRows); setShowCalibrationModal(false); }}
+            />
           )}
 
           {unlocked && !showAddOp && (
@@ -1203,7 +1364,7 @@ function AddMachinePanel({ onSave, onCancel, otherMachines }) {
    tocar, em vez de expandir tudo aninhado na mesma tela. */
 function CellListItem({ cell, onOpen }) {
   const rows = flattenToolRows([cell])
-    .map((r) => computeRemaining(r.tool))
+    .map((r) => computeRemaining(r.tool, cell.blockPreset || '6cc'))
     .filter((r) => r !== null);
   const minRemaining = rows.length ? Math.min(...rows) : null;
   const status = statusFor(minRemaining);
@@ -1244,6 +1405,7 @@ function CellDetail({
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
   onApplyPallet, onResetPallet, onSetBlockPreset, editUnlocked, onToggleLock,
+  onStartCalibration, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1385,6 +1547,9 @@ function CellDetail({
           onApplyPallet={onApplyPallet}
           onResetPallet={onResetPallet}
           blockPreset={preset}
+          onStartCalibration={onStartCalibration}
+          onCancelCalibration={onCancelCalibration}
+          onFinishCalibration={onFinishCalibration}
         />
       ))}
     </div>
@@ -1426,7 +1591,7 @@ function AddCellPanel({ onSave, onCancel }) {
 
 function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName = false }) {
   const rows = flattenToolRows(cells)
-    .map((r) => ({ ...r, remaining: computeRemaining(r.tool) }))
+    .map((r) => ({ ...r, remaining: computeRemaining(r.tool, r.preset) }))
     .filter((r) => r.remaining !== null)
     .sort((a, b) => a.remaining - b.remaining)
     .slice(0, 5);
@@ -1624,6 +1789,9 @@ export default function App() {
   const [photoBusyKind, setPhotoBusyKind] = useState(null);
   const [pendingCrop, setPendingCrop] = useState(null); // { machineId, kind, file }
   const [editUnlocked, setEditUnlocked] = useState(false);
+  const [pendingImport, setPendingImport] = useState(null);
+  const [importError, setImportError] = useState('');
+  const importInputRef = useRef(null);
 
   const selectedCell = cells.find((c) => c.id === expandedCellId) || null;
 
@@ -1669,6 +1837,31 @@ export default function App() {
     persist((prev) => [...prev, cell]);
     setAddingCell(false);
     openCell(cell.id); // entra direto na célula recém-criada
+  }
+
+  function handleExport() {
+    exportBackup(cells);
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImportError('');
+    try {
+      const imported = await importBackup(file);
+      setPendingImport(imported);
+    } catch (err) {
+      setImportError('Esse arquivo não parece um backup válido.');
+    }
+  }
+
+  function confirmImport() {
+    persist(() => pendingImport);
+    setPendingImport(null);
+    setExpandedCellId(null);
+    setExpandedMachineId(null);
+    setExpandedOpId(null);
   }
   function deleteCell(cellId) {
     persist((prev) => prev.filter((c) => c.id !== cellId));
@@ -1736,19 +1929,11 @@ export default function App() {
   // Preset de bloco (4cc/6cc) da célula: sobrescreve o desgaste/peça de
   // TODAS as ferramentas dela de uma vez — um jeito rápido de trocar
   // quando o tipo de bloco rodado muda.
+  // Trocar o preset só muda QUAL valor é usado pro cálculo (cada
+  // ferramenta guarda um desgaste por bloco) — nunca mais sobrescreve o
+  // que já foi calibrado.
   function setBlockPreset(cellId, preset) {
-    const desgaste = preset === '4cc' ? 1 : 1.5;
-    persist((prev) => updateCellById(prev, cellId, (c) => ({
-      ...c,
-      blockPreset: preset,
-      machines: c.machines.map((m) => ({
-        ...m,
-        operations: m.operations.map((o) => ({
-          ...o,
-          tools: o.tools.map((t) => ({ ...t, desgastePeca: desgaste })),
-        })),
-      })),
-    })));
+    persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, blockPreset: preset })));
   }
 
   function resetPalletCount(machineId, pallet) {
@@ -1768,10 +1953,7 @@ export default function App() {
       ...c,
       machines: c.machines.map((m) => {
         if (m.id !== machineId) return m;
-        // Ferramentas cadastradas antes do preset existir podem estar com
-        // desgaste 0 — nesses casos usa o padrão da célula em vez de somar
-        // nada (que era o motivo do contador parecer não funcionar).
-        const fallback = desgasteForPreset(c.blockPreset);
+        const preset = c.blockPreset || '6cc';
         return {
           ...m,
           palletLastCount: { ...(m.palletLastCount || {}), [pallet]: newCount },
@@ -1780,16 +1962,62 @@ export default function App() {
             return {
               ...o,
               tools: o.tools.map((t) => {
-                const desg = parseFloat(t.desgastePeca) || fallback;
+                const desg = getToolDesgaste(t, preset);
                 return {
                   ...t,
-                  desgastePeca: desg,
                   vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * amount,
                   lastUpdated: new Date().toISOString(),
                 };
               }),
             };
           }),
+        };
+      }),
+    })));
+  }
+
+  // Calibração: guarda a vida atual de cada ferramenta como ponto de
+  // partida. Ao finalizar, calcula (fim−início)÷peças por ferramenta e
+  // grava só no bloco que estava sendo calibrado — nunca sobrescreve
+  // outro bloco nem apaga o que já foi calibrado antes.
+  function startCalibration(machineId) {
+    persist((prev) => prev.map((c) => ({
+      ...c,
+      machines: c.machines.map((m) => {
+        if (m.id !== machineId) return m;
+        const snapshot = {};
+        m.operations.forEach((o) => o.tools.forEach((t) => {
+          if (!t.isRoutine) snapshot[t.id] = parseFloat(t.vidaAtual) || 0;
+        }));
+        return { ...m, calibration: { preset: c.blockPreset || '6cc', startedAt: new Date().toISOString(), snapshot } };
+      }),
+    })));
+  }
+
+  function cancelCalibration(machineId) {
+    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, calibration: null })));
+  }
+
+  function finishCalibration(machineId, readyRows) {
+    const byId = {};
+    readyRows.forEach((r) => { byId[r.toolId] = r.computed; });
+    persist((prev) => prev.map((c) => ({
+      ...c,
+      machines: c.machines.map((m) => {
+        if (m.id !== machineId) return m;
+        const preset = m.calibration?.preset || c.blockPreset || '6cc';
+        return {
+          ...m,
+          calibration: null,
+          operations: m.operations.map((o) => ({
+            ...o,
+            tools: o.tools.map((t) => {
+              const val = byId[t.id];
+              if (val === undefined) return t;
+              const prevMap = (t.desgastePeca && typeof t.desgastePeca === 'object') ? t.desgastePeca : {};
+              return { ...t, desgastePeca: { ...prevMap, [preset]: Math.round(val * 100) / 100 } };
+            }),
+          })),
         };
       }),
     })));
@@ -1958,6 +2186,9 @@ export default function App() {
               <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
               <div style={{ fontSize: 11.5, color: C.textFaint }}>Célula · Máquina · Operação</div>
             </div>
+            <IconBtn title="Exportar backup" onClick={handleExport}><Download size={16} color={C.textDim} /></IconBtn>
+            <IconBtn title="Importar backup" onClick={() => importInputRef.current?.click()}><Upload size={16} color={C.textDim} /></IconBtn>
+            <input ref={importInputRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={handleImportFile} />
             <button
               onClick={() => setEditUnlocked((u) => !u)}
               title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
@@ -1970,6 +2201,30 @@ export default function App() {
               {editUnlocked ? <Unlock size={13} /> : <Lock size={13} />}
               {editUnlocked ? 'Destravado' : 'Travado'}
             </button>
+          </div>
+        )}
+
+        {importError && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', background: C.critSoft, border: `1px solid ${C.crit}`, borderRadius: 8, marginBottom: 12 }}>
+            <AlertTriangle size={15} color={C.crit} />
+            <span style={{ fontSize: 12.5, color: C.text, flex: 1 }}>{importError}</span>
+            <IconBtn onClick={() => setImportError('')}><X size={14} /></IconBtn>
+          </div>
+        )}
+
+        {pendingImport && (
+          <div style={{ padding: '11px 12px', background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, color: C.text, marginBottom: 8 }}>
+              Importar vai <strong>substituir tudo</strong> que está cadastrado agora ({pendingImport.length} {pendingImport.length === 1 ? 'célula' : 'células'} no arquivo). Isso não tem volta — exporte um backup do estado atual antes, se quiser guardar.
+            </div>
+            <div className="flex gap-2">
+              <button onClick={confirmImport} style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+                Substituir e importar
+              </button>
+              <button onClick={() => setPendingImport(null)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
           </div>
         )}
 
@@ -2002,6 +2257,9 @@ export default function App() {
             onApplyPallet={applyPalletCount}
             onResetPallet={resetPalletCount}
             onSetBlockPreset={setBlockPreset}
+            onStartCalibration={startCalibration}
+            onCancelCalibration={cancelCalibration}
+            onFinishCalibration={finishCalibration}
           />
         ) : (
           <>
