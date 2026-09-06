@@ -962,69 +962,61 @@ function AddOperationPanel({ onSave, onCancel, blockPreset }) {
    O app guarda a ÚLTIMA contagem registrada e calcula a diferença
    sozinho — assim você só digita o número que está no computador
    naquele momento, sem precisar lembrar de quanto era antes. */
-function PalletCounterRow({ pallet, lastCount, onApply, onReset }) {
+function PalletCounterRow({ pallet, lastAdd, onAdd, onUndo }) {
   const [draft, setDraft] = useState('');
 
-  const now = parseInt(draft, 10);
-  const valid = !isNaN(now) && now >= 0;
-  const diff = valid ? now - lastCount : null;
-  const isReset = valid && now < lastCount; // contador zerou (troca de turno)
-  const applyAmount = isReset ? now : diff;
+  const n = parseInt(draft, 10);
+  const valid = !isNaN(n) && n > 0;
 
-  function commit() {
+  function add() {
     if (!valid) return;
-    onApply(applyAmount, now);
+    onAdd(n);
     setDraft('');
-  }
-  function bump(by) {
-    const base = valid ? now : lastCount;
-    setDraft(String(Math.max(0, base + by)));
   }
 
   return (
     <div style={{ padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ fontSize: 13, color: C.text, minWidth: 62, fontWeight: 600 }}>Pallet {pallet}</span>
-        <IconBtn title="Menos um" onClick={() => bump(-1)}><Minus size={14} /></IconBtn>
         <TextInput
           inputMode="numeric"
           value={draft}
-          placeholder={String(lastCount)}
+          placeholder="peças"
           onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
           style={{ flex: 1, textAlign: 'center', padding: '6px 2px' }}
         />
-        <IconBtn title="Mais um" onClick={() => bump(1)}><Plus size={14} /></IconBtn>
         <button
-          onClick={commit}
-          disabled={!valid || applyAmount <= 0}
+          onClick={add}
+          disabled={!valid}
           style={{
-            fontSize: 12, borderRadius: 6, padding: '6px 10px',
-            background: valid && applyAmount > 0 ? C.accentSoft : 'transparent',
-            color: valid && applyAmount > 0 ? C.accent : C.textFaint,
-            border: `1px solid ${valid && applyAmount > 0 ? C.accent : C.border}`,
-            cursor: valid && applyAmount > 0 ? 'pointer' : 'default',
+            fontSize: 12, borderRadius: 6, padding: '6px 12px',
+            background: valid ? C.accentSoft : 'transparent',
+            color: valid ? C.accent : C.textFaint,
+            border: `1px solid ${valid ? C.accent : C.border}`,
+            cursor: valid ? 'pointer' : 'default',
           }}
         >
-          Atualizar
+          Adicionar
         </button>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, paddingLeft: 2 }}>
-        <span style={{ fontSize: 11.5, color: C.textFaint, flex: 1 }}>
-          {valid
-            ? (isReset
-              ? `contador zerou — vai somar ${now} ${now === 1 ? 'peça' : 'peças'}`
-              : (diff > 0
-                ? `+${diff} ${diff === 1 ? 'peça' : 'peças'} desde a última atualização`
-                : 'nenhuma peça nova'))
-            : `última contagem registrada: ${lastCount}`}
-        </span>
-        <button
-          onClick={onReset}
-          style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
-        >
-          zerar contagem
-        </button>
-      </div>
+      {lastAdd ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, paddingLeft: 2 }}>
+          <span style={{ fontSize: 11.5, color: C.textFaint, flex: 1 }}>
+            +{lastAdd.amount} {lastAdd.amount === 1 ? 'peça adicionada' : 'peças adicionadas'} por último
+          </span>
+          <button
+            onClick={onUndo}
+            style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+          >
+            desfazer
+          </button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4, paddingLeft: 2 }}>
+          digite a produção de um turno e toque em Adicionar — repita pra cada turno que quiser lançar
+        </div>
+      )}
     </div>
   );
 }
@@ -1122,7 +1114,7 @@ function MachineCard({
   onAddOperation, onToggleOp, expandedOpId,
   onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusy, onManualEntry,
-  onApplyPallet, onResetPallet, blockPreset,
+  onAddProduction, onUndoProduction, blockPreset,
   onStartCalibration, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
@@ -1173,15 +1165,15 @@ function MachineCard({
               {showCounter && (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px 6px', marginTop: 6 }}>
                   <div style={{ fontSize: 11.5, color: C.textFaint, textAlign: 'center', padding: '8px 0 6px' }}>
-                    digite a contagem que está no computador agora
+                    lance a produção de cada turno assim que ela aparecer no computador
                   </div>
                   {pallets.map((p) => (
                     <PalletCounterRow
                       key={p}
                       pallet={p}
-                      lastCount={(machine.palletLastCount || {})[p] || 0}
-                      onApply={(amount, newCount) => onApplyPallet(machine.id, p, amount, newCount)}
-                      onReset={() => onResetPallet(machine.id, p)}
+                      lastAdd={(machine.lastAdd || {})[p] || null}
+                      onAdd={(pieces) => onAddProduction(machine.id, p, pieces)}
+                      onUndo={() => onUndoProduction(machine.id, p)}
                     />
                   ))}
                 </div>
@@ -1404,7 +1396,7 @@ function CellDetail({
   onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
-  onApplyPallet, onResetPallet, onSetBlockPreset, editUnlocked, onToggleLock,
+  onAddProduction, onUndoProduction, onSetBlockPreset, editUnlocked, onToggleLock,
   onStartCalibration, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
@@ -1544,8 +1536,8 @@ function CellDetail({
           onPhotoFile={onPhotoFile}
           photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
           onManualEntry={onManualEntry}
-          onApplyPallet={onApplyPallet}
-          onResetPallet={onResetPallet}
+          onAddProduction={onAddProduction}
+          onUndoProduction={onUndoProduction}
           blockPreset={preset}
           onStartCalibration={onStartCalibration}
           onCancelCalibration={onCancelCalibration}
@@ -1936,19 +1928,13 @@ export default function App() {
     persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, blockPreset: preset })));
   }
 
-  function resetPalletCount(machineId, pallet) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({
-      ...m,
-      palletLastCount: { ...(m.palletLastCount || {}), [pallet]: 0 },
-    })));
-  }
-
-  // Soma "desgaste x peças novas" na vida atual de toda ferramenta cujo
-  // operação pertence a esse pallet, e guarda a nova contagem como
-  // referência — assim na próxima vez basta digitar o número do
-  // computador de novo, sem precisar lembrar de quanto era antes.
-  function applyPalletCount(machineId, pallet, amount, newCount) {
-    if (!amount || amount <= 0) return;
+  // O computador mostra a produção de CADA TURNO como número solto (não
+  // um contador corrido) — então aqui é só somar: pega quantas peças
+  // aquele turno fez e soma "desgaste x peças" na vida atual de toda
+  // ferramenta daquele pallet. Cada turno é lançado como uma ação
+  // independente (sua, do 6º, do 1º...), sem precisar comparar com nada.
+  function addPalletProduction(machineId, pallet, pieces) {
+    if (!pieces || pieces <= 0) return;
     persist((prev) => prev.map((c) => ({
       ...c,
       machines: c.machines.map((m) => {
@@ -1956,18 +1942,42 @@ export default function App() {
         const preset = c.blockPreset || '6cc';
         return {
           ...m,
-          palletLastCount: { ...(m.palletLastCount || {}), [pallet]: newCount },
+          lastAdd: { ...(m.lastAdd || {}), [pallet]: { amount: pieces, appliedAt: Date.now() } },
           operations: m.operations.map((o) => {
             if (o.pallet !== pallet) return o;
             return {
               ...o,
               tools: o.tools.map((t) => {
                 const desg = getToolDesgaste(t, preset);
-                return {
-                  ...t,
-                  vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * amount,
-                  lastUpdated: new Date().toISOString(),
-                };
+                return { ...t, vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * pieces, lastUpdated: new Date().toISOString() };
+              }),
+            };
+          }),
+        };
+      }),
+    })));
+  }
+
+  // Desfaz só o último lançamento daquele pallet — pra corrigir um
+  // número digitado errado sem precisar editar ferramenta por ferramenta.
+  function undoPalletProduction(machineId, pallet) {
+    persist((prev) => prev.map((c) => ({
+      ...c,
+      machines: c.machines.map((m) => {
+        if (m.id !== machineId) return m;
+        const last = (m.lastAdd || {})[pallet];
+        if (!last) return m;
+        const preset = c.blockPreset || '6cc';
+        return {
+          ...m,
+          lastAdd: { ...(m.lastAdd || {}), [pallet]: null },
+          operations: m.operations.map((o) => {
+            if (o.pallet !== pallet) return o;
+            return {
+              ...o,
+              tools: o.tools.map((t) => {
+                const desg = getToolDesgaste(t, preset);
+                return { ...t, vidaAtual: Math.max(0, (parseFloat(t.vidaAtual) || 0) - desg * last.amount) };
               }),
             };
           }),
@@ -2254,8 +2264,8 @@ export default function App() {
             photoBusyMachineId={photoBusyMachineId}
             photoBusyKind={photoBusyKind}
             onManualEntry={openManualEntry}
-            onApplyPallet={applyPalletCount}
-            onResetPallet={resetPalletCount}
+            onAddProduction={addPalletProduction}
+            onUndoProduction={undoPalletProduction}
             onSetBlockPreset={setBlockPreset}
             onStartCalibration={startCalibration}
             onCancelCalibration={cancelCalibration}
