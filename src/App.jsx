@@ -1190,7 +1190,7 @@ function MachineCard({
                 className="flex items-center gap-1.5 justify-center w-full"
                 style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
               >
-                {showPanelRead ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Ler do painel
+                {showPanelRead ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Alterar vida ( T )
               </button>
               {showPanelRead && (
                 <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginTop: 6 }}>
