@@ -100,7 +100,7 @@ function computeRemaining(tool, preset) {
   const desg = getToolDesgaste(tool, preset);
   const vu = parseFloat(tool.vidaUtil);
   const va = parseFloat(tool.vidaAtual);
-  if (!desg || desg <= 0 || isNaN(vu) || isNaN(va)) return null;
+  if (!desg || desg <= 0 || isNaN(vu) || vu <= 0 || isNaN(va)) return null;
   return Math.floor((vu - va) / desg);
 }
 
@@ -1631,8 +1631,16 @@ function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName
 function OcrModal({ state, onClose, onRetake, onSave }) {
   const { machineLabel, status, rows, error } = state;
   const [localRows, setLocalRows] = useState(rows || []);
+  const [showVU, setShowVU] = useState(false);
 
-  React.useEffect(() => { setLocalRows(rows || []); }, [rows]);
+  React.useEffect(() => {
+    setLocalRows(rows || []);
+    // Só abre a seção de vida útil sozinha quando a leitura realmente
+    // trouxe algo pra ela (ex: foto da tela #800-849) — no dia a dia
+    // (vida atual / digitar manualmente) ela fica fechada.
+    const hasVU = (rows || []).some((r) => !r.isRoutine && (r.newVidaUtil !== '' || r.vidaUtilConfidence === 'low'));
+    setShowVU(hasVU);
+  }, [rows]);
 
   const lowConfidenceCount = localRows.reduce((n, r) => {
     let c = 0;
@@ -1677,10 +1685,6 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
 
         {status === 'review' && (
           <>
-            <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }}>
-              VU = vida útil (tela #800-849) · VA = vida atual (tela #900-949). Cada foto só preenche o que aparecer nela.
-            </div>
-
             {lowConfidenceCount > 0 && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px', marginBottom: 12 }}>
                 <AlertTriangle size={15} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
@@ -1690,59 +1694,57 @@ function OcrModal({ state, onClose, onRetake, onSave }) {
               </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr 1fr', columnGap: 8, rowGap: 3, marginBottom: 14, alignItems: 'center' }}>
-              <div style={{ gridRow: 1, gridColumn: 1 }} />
-              <div style={{ gridRow: 1, gridColumn: 2, fontSize: 11, color: C.textFaint, textAlign: 'center' }}>VIDA ÚTIL</div>
-              <div style={{ gridRow: 1, gridColumn: 3, fontSize: 11, color: C.textFaint, textAlign: 'center' }}>VIDA ATUAL</div>
-
-              {/* Colunas inteiras em blocos separados (não linha por linha) —
-                  assim a setinha "próximo" do teclado numérico desce dentro
-                  da mesma coluna que você está preenchendo, em vez de pular
-                  pra coluna vizinha. */}
+            <div style={{ marginBottom: 10 }}>
               {localRows.map((row, idx) => (
-                <div key={`slot-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 1, fontFamily: MONO, fontSize: 13, color: C.text, borderTop: `1px solid ${C.border}`, paddingTop: 8, alignSelf: 'start' }}>
-                  {row.slot}
-                  {row.opName && <div style={{ fontSize: 10, color: C.textFaint, fontFamily: SANS }}>{row.opName}</div>}
+                <div key={row.toolId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ minWidth: 56 }}>
+                    <div style={{ fontFamily: MONO, fontSize: 14, color: C.text }}>{row.slot}</div>
+                    {row.opName && <div style={{ fontSize: 9.5, color: C.textFaint }}>{row.opName}</div>}
+                  </div>
+                  <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
+                  <TextInput
+                    inputMode="decimal"
+                    value={row.newVidaAtual}
+                    placeholder="—"
+                    onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
+                    style={{ flex: 1, textAlign: 'center', fontSize: 15, padding: '7px 4px', borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
+                  />
+                  <span style={{ fontSize: 10, color: C.textFaint, minWidth: 50, textAlign: 'right' }}>{fmtNum(row.oldVidaAtual)} antes</span>
                 </div>
               ))}
+            </div>
 
-              {localRows.map((row, idx) => (
-                <div key={`vu-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 2, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                  {row.isRoutine ? (
-                    <div style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>—</div>
-                  ) : (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {/* Vida útil quase nunca muda depois de definida — fica fechada
+                por padrão pra não competir com o que você mexe todo dia. */}
+            <div style={{ marginBottom: 12 }}>
+              <button
+                onClick={() => setShowVU((v) => !v)}
+                className="flex items-center gap-1.5 justify-center w-full"
+                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '7px 0', fontSize: 12, cursor: 'pointer' }}
+              >
+                {showVU ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Vida útil (raramente muda)
+              </button>
+              {showVU && (
+                <div style={{ background: C.surfaceDeep, borderRadius: 8, padding: '2px 10px', marginTop: 6 }}>
+                  {localRows.map((row, idx) => {
+                    if (row.isRoutine) return null;
+                    return (
+                      <div key={row.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
+                        <span style={{ fontFamily: MONO, fontSize: 12.5, color: C.text, minWidth: 44 }}>{row.slot}</span>
                         <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
                         <TextInput
                           inputMode="decimal"
                           value={row.newVidaUtil}
                           placeholder="—"
                           onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
-                          style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
+                          style={{ flex: 1, textAlign: 'center', fontSize: 13, padding: '5px 4px', borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
                         />
+                        <span style={{ fontSize: 9.5, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaUtil)} antes</span>
                       </div>
-                      <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaUtil)} antes</div>
-                    </>
-                  )}
+                    );
+                  })}
                 </div>
-              ))}
-
-              {localRows.map((row, idx) => (
-                <div key={`va-${row.toolId}`} style={{ gridRow: idx + 2, gridColumn: 3, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
-                    <TextInput
-                      inputMode="decimal"
-                      value={row.newVidaAtual}
-                      placeholder="—"
-                      onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
-                      style={{ flex: 1, textAlign: 'center', padding: '5px 4px', fontSize: 13, borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
-                    />
-                  </div>
-                  <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center', marginTop: 2 }}>{fmtNum(row.oldVidaAtual)} antes</div>
-                </div>
-              ))}
+              )}
             </div>
 
             <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 12 }}>Campos em branco mantêm o valor atual.</div>
