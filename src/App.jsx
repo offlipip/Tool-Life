@@ -1035,13 +1035,13 @@ function CalibrationModal({ machine, onClose, onSave }) {
     if (op.pallet !== 1 && op.pallet !== 2) return;
     op.tools.forEach((t) => {
       if (t.isRoutine) return;
-      if (!(t.id in cal.snapshot)) return; // cadastrada depois do início, sem como calibrar ainda
+      if (!(t.id in cal.snapshot) || !(t.id in cal.finish)) return; // sem leitura fresca dos dois lados, sem como calibrar
       const n = parseInt(pieces[op.pallet], 10);
       const valid = !isNaN(n) && n > 0;
       const startVA = cal.snapshot[t.id];
-      const currentVA = parseFloat(t.vidaAtual) || 0;
-      const computed = valid ? (currentVA - startVA) / n : null;
-      rows.push({ toolId: t.id, slot: t.slot, startVA, currentVA, computed });
+      const finishVA = cal.finish[t.id];
+      const computed = valid ? (finishVA - startVA) / n : null;
+      rows.push({ toolId: t.id, slot: t.slot, startVA, finishVA, computed });
     });
   });
   const readyRows = rows.filter((r) => r.computed !== null && r.computed > 0);
@@ -1050,12 +1050,12 @@ function CalibrationModal({ machine, onClose, onSave }) {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 55, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, width: '100%', maxWidth: 480, maxHeight: '86vh', overflowY: 'auto', border: `1px solid ${C.borderLight}`, borderBottom: 'none', padding: 16 }}>
         <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 14px' }} />
-        <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Finalizar calibração</div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Resultado da calibração</div>
         <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>
-          bloco {cal.preset} · iniciada {new Date(cal.startedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+          bloco {cal.preset} · início {new Date(cal.startedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
         </div>
 
-        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Quantas peças rodaram em cada pallet desde o início?</div>
+        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Quantas peças rodaram em cada pallet entre a leitura de início e a de fim?</div>
         {pallets.map((p) => (
           <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <span style={{ fontSize: 13, color: C.text, minWidth: 62 }}>Pallet {p}</span>
@@ -1072,13 +1072,13 @@ function CalibrationModal({ machine, onClose, onSave }) {
         <div style={{ fontSize: 11, color: C.textFaint, margin: '14px 0 8px' }}>Valores calculados — confira antes de salvar</div>
         {rows.length === 0 && (
           <div style={{ fontSize: 12, color: C.textFaint, padding: '8px 0' }}>
-            Nenhuma ferramenta pra calibrar (confira se as operações têm pallet definido).
+            Nenhuma ferramenta pra calibrar (confira se as operações têm pallet definido, e se as duas leituras trouxeram vida atual pra essas ferramentas).
           </div>
         )}
         {rows.map((r) => (
           <div key={r.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
             <span style={{ fontFamily: MONO, fontSize: 13, color: C.text, minWidth: 44 }}>{r.slot}</span>
-            <span style={{ fontSize: 10.5, color: C.textFaint, flex: 1 }}>{fmtNum(r.startVA)} → {fmtNum(r.currentVA)}</span>
+            <span style={{ fontSize: 10.5, color: C.textFaint, flex: 1 }}>{fmtNum(r.startVA)} → {fmtNum(r.finishVA)}</span>
             <span style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: r.computed === null ? C.textFaint : (r.computed > 0 ? C.ok : C.crit) }}>
               {r.computed === null ? '—' : r.computed.toFixed(2)}
             </span>
@@ -1098,6 +1098,7 @@ function CalibrationModal({ machine, onClose, onSave }) {
           </button>
           <button onClick={onClose} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '10px 14px', fontSize: 13.5, cursor: 'pointer' }}>
             Fechar
+
           </button>
         </div>
       </div>
@@ -1115,7 +1116,7 @@ function MachineCard({
   onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusy, onManualEntry,
   onAddProduction, onUndoProduction, blockPreset,
-  onStartCalibration, onCancelCalibration, onFinishCalibration,
+  onStartCalibration, onSetCalibrationPhase, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1125,6 +1126,12 @@ function MachineCard({
   const [showPanelRead, setShowPanelRead] = useState(false);
   const [showCounter, setShowCounter] = useState(false);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
+
+  const calPhase = machine.calibration?.phase;
+  React.useEffect(() => {
+    if (calPhase === 'awaiting_start' || calPhase === 'awaiting_finish') setShowPanelRead(true);
+    if (calPhase === 'ready') setShowCalibrationModal(true);
+  }, [calPhase]);
 
   const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
   const hasOps = machine.operations.length > 0;
@@ -1208,32 +1215,13 @@ function MachineCard({
             </div>
           )}
 
-          {/* Calibração de desgaste — só faz sentido com ferramentas já
-              cadastradas, e só quem destrava mexe nisso. */}
+          {/* Calibração de desgaste — usa sempre uma leitura FRESCA do
+              painel no início e no fim (nunca o valor acumulado pelo
+              contador de peças), porque senão a conta acaba só confirmando
+              de volta o próprio chute que estava tentando corrigir. */}
           {unlocked && hasOps && (
             <div style={{ marginBottom: 8 }}>
-              {machine.calibration ? (
-                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
-                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
-                    Calibrando bloco {machine.calibration.preset} desde{' '}
-                    {new Date(machine.calibration.startedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowCalibrationModal(true)}
-                      style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '7px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
-                    >
-                      Finalizar
-                    </button>
-                    <button
-                      onClick={() => onCancelCalibration(machine.id)}
-                      style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                </div>
-              ) : (
+              {!machine.calibration && (
                 <button
                   onClick={() => onStartCalibration(machine.id)}
                   className="flex items-center gap-1.5 justify-center w-full"
@@ -1242,10 +1230,53 @@ function MachineCard({
                   <Wrench size={13} /> Calibrar desgaste (bloco {blockPreset})
                 </button>
               )}
+
+              {machine.calibration?.phase === 'awaiting_start' && (
+                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
+                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
+                    Agora leia a vida atual (foto ou "Digitar manualmente" logo acima) — essa leitura vira o <strong>início</strong> da calibração do bloco {machine.calibration.preset}.
+                  </div>
+                  <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
+                    Cancelar calibração
+                  </button>
+                </div>
+              )}
+
+              {machine.calibration?.phase === 'running' && (
+                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
+                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
+                    Calibrando bloco {machine.calibration.preset} desde{' '}
+                    {new Date(machine.calibration.startedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    . Deixe rodar as peças que quiser antes de finalizar.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onSetCalibrationPhase(machine.id, 'awaiting_finish')}
+                      style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '7px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      Finalizar
+                    </button>
+                    <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {machine.calibration?.phase === 'awaiting_finish' && (
+                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
+                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
+                    Agora leia a vida atual de novo (foto ou "Digitar manualmente") — essa leitura vira o <strong>fim</strong> da calibração.
+                  </div>
+                  <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
+                    Cancelar calibração
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {showCalibrationModal && machine.calibration && (
+          {showCalibrationModal && machine.calibration?.phase === 'ready' && (
             <CalibrationModal
               machine={machine}
               onClose={() => setShowCalibrationModal(false)}
@@ -1397,7 +1428,7 @@ function CellDetail({
   expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
   onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
   onAddProduction, onUndoProduction, onSetBlockPreset, editUnlocked, onToggleLock,
-  onStartCalibration, onCancelCalibration, onFinishCalibration,
+  onStartCalibration, onSetCalibrationPhase, onCancelCalibration, onFinishCalibration,
 }) {
   const { unlocked } = React.useContext(EditLockContext);
   const [renaming, setRenaming] = useState(false);
@@ -1485,7 +1516,7 @@ function CellDetail({
                   border: `1px solid ${preset === p ? C.accent : C.border}`,
                 }}
               >
-                {p} {p === '4cc' ? '(desgaste 1)' : '(desgaste 1.5)'}
+                {p === '4cc' ? '4cc • 6509' : '6cc • 6508'}
               </button>
             ))}
           </div>
@@ -1540,6 +1571,7 @@ function CellDetail({
           onUndoProduction={onUndoProduction}
           blockPreset={preset}
           onStartCalibration={onStartCalibration}
+          onSetCalibrationPhase={onSetCalibrationPhase}
           onCancelCalibration={onCancelCalibration}
           onFinishCalibration={onFinishCalibration}
         />
@@ -1620,6 +1652,7 @@ function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName
           );
         })}
       </div>
+      <div style={{ fontSize: 10.5, color: C.textFaint, textAlign: 'center', marginTop: 6 }}>Célula · Máquina · Operação</div>
     </div>
   );
 }
@@ -1988,22 +2021,22 @@ export default function App() {
     })));
   }
 
-  // Calibração: guarda a vida atual de cada ferramenta como ponto de
-  // partida. Ao finalizar, calcula (fim−início)÷peças por ferramenta e
-  // grava só no bloco que estava sendo calibrado — nunca sobrescreve
-  // outro bloco nem apaga o que já foi calibrado antes.
+  // Calibração: em vez de guardar a vida atual que já está na tela (que
+  // pode ter sido incrementada pelo contador de peças usando um desgaste
+  // ainda não calibrado), pede uma leitura FRESCA do painel no início e
+  // outra no fim — só assim a conta mede de verdade, sem se confirmar
+  // sozinha em cima do próprio chute que está tentando corrigir.
   function startCalibration(machineId) {
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => {
-        if (m.id !== machineId) return m;
-        const snapshot = {};
-        m.operations.forEach((o) => o.tools.forEach((t) => {
-          if (!t.isRoutine) snapshot[t.id] = parseFloat(t.vidaAtual) || 0;
-        }));
-        return { ...m, calibration: { preset: c.blockPreset || '6cc', startedAt: new Date().toISOString(), snapshot } };
-      }),
+    persist((prev) => updateMachineById(prev, machineId, (m) => ({
+      ...m,
+      calibration: { preset: prev.find((c) => c.machines.some((mm) => mm.id === machineId))?.blockPreset || '6cc', phase: 'awaiting_start', startedAt: new Date().toISOString() },
     })));
+  }
+
+  function setCalibrationPhase(machineId, phase) {
+    persist((prev) => updateMachineById(prev, machineId, (m) => (
+      m.calibration ? { ...m, calibration: { ...m.calibration, phase } } : m
+    )));
   }
 
   function cancelCalibration(machineId) {
@@ -2151,13 +2184,13 @@ export default function App() {
   }
 
   function saveOcrRows(rows) {
+    const machineId = ocrModal?.machineId;
     const byToolId = {};
     rows.forEach((r) => { byToolId[r.toolId] = r; });
     persist((prev) => prev.map((c) => ({
       ...c,
-      machines: c.machines.map((m) => ({
-        ...m,
-        operations: m.operations.map((o) => ({
+      machines: c.machines.map((m) => {
+        const updatedOperations = m.operations.map((o) => ({
           ...o,
           tools: o.tools.map((t) => {
             const row = byToolId[t.id];
@@ -2172,8 +2205,27 @@ export default function App() {
             if (Object.keys(patch).length === 0) return t;
             return { ...t, ...patch, lastUpdated: new Date().toISOString() };
           }),
-        })),
-      })),
+        }));
+
+        if (m.id !== machineId) return { ...m, operations: updatedOperations };
+
+        // Se essa máquina está esperando uma leitura fresca pra virar o
+        // início ou o fim da calibração, captura agora — os valores já
+        // saem certos de updatedOperations, direto dessa leitura (foto
+        // ou manual), sem depender do que o contador de peças acumulou.
+        let nextCalibration = m.calibration;
+        if (m.calibration?.phase === 'awaiting_start' || m.calibration?.phase === 'awaiting_finish') {
+          const captured = {};
+          updatedOperations.forEach((o) => o.tools.forEach((t) => {
+            if (!t.isRoutine) captured[t.id] = parseFloat(t.vidaAtual) || 0;
+          }));
+          nextCalibration = m.calibration.phase === 'awaiting_start'
+            ? { ...m.calibration, phase: 'running', snapshot: captured }
+            : { ...m.calibration, phase: 'ready', finish: captured };
+        }
+
+        return { ...m, operations: updatedOperations, calibration: nextCalibration };
+      }),
     })));
     setOcrModal(null);
   }
@@ -2196,7 +2248,6 @@ export default function App() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
-              <div style={{ fontSize: 11.5, color: C.textFaint }}>Célula · Máquina · Operação</div>
             </div>
             <IconBtn title="Exportar backup" onClick={handleExport}><Download size={16} color={C.textDim} /></IconBtn>
             <IconBtn title="Importar backup" onClick={() => importInputRef.current?.click()}><Upload size={16} color={C.textDim} /></IconBtn>
@@ -2270,6 +2321,7 @@ export default function App() {
             onUndoProduction={undoPalletProduction}
             onSetBlockPreset={setBlockPreset}
             onStartCalibration={startCalibration}
+            onSetCalibrationPhase={setCalibrationPhase}
             onCancelCalibration={cancelCalibration}
             onFinishCalibration={finishCalibration}
           />
