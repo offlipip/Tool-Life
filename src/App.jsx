@@ -2421,7 +2421,10 @@ export default function App() {
   return (
     <EditLockContext.Provider value={{ unlocked: editUnlocked }}>
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: SANS, color: C.text }}>
-      <div style={{ maxWidth: 480, margin: '0 auto', padding: '18px 14px 90px' }}>
+      <div style={{
+        maxWidth: 480, margin: '0 auto',
+        padding: 'calc(18px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(90px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))',
+      }}>
         {!selectedCell && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
             <div style={{ width: 34, height: 34, borderRadius: 8, background: C.brandNavy, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
