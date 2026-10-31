@@ -47,7 +47,7 @@ jobs:
             echo "::error::Não achei uma pasta cmdline-tools em ANDROID_SDK_ROOT ($ANDROID_SDK_ROOT), ANDROID_HOME ($ANDROID_HOME) nem em /usr/local/lib/android/sdk"
             exit 1
           fi
-          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort -r | head -n1)
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 4 -name sdkmanager -type f | sort -r | head -n1)
           if [ -z "$SDKMANAGER" ]; then
             echo "::error::Achei $SDK_ROOT/cmdline-tools mas nenhum binário sdkmanager dentro"
             find "$SDK_ROOT/cmdline-tools" -maxdepth 3
