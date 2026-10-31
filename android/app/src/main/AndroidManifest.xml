@@ -38,4 +38,8 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Sem isso, o WebView tira a opção "Câmera" do seletor de foto e só
+         sobra "Galeria" (os botões de foto usam <input type=file capture>). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 </manifest>
