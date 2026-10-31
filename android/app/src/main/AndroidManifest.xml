@@ -35,6 +35,14 @@
         </provider>
     </application>
 
+    <!-- Android 11+: sem isso o app não "enxerga" o app de câmera do sistema
+         e o botão de foto cai no seletor de galeria em vez de abrir a câmera. -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

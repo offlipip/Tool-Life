@@ -21,6 +21,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # pra publicar o APK numa Release
     steps:
       - uses: actions/checkout@v4
 
@@ -80,3 +82,16 @@ jobs:
         with:
           name: toolpy-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      # Link direto, sem login e sem .zip — dá pra baixar pelo navegador do
+      # celular: https://github.com/offlipip/Tool-Life/releases/download/apk-latest/toolpy.apk
+      - name: Publicar APK numa Release (link direto pro celular)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk toolpy.apk
+          gh release delete apk-latest --yes --cleanup-tag || true
+          gh release create apk-latest toolpy.apk \
+            --prerelease \
+            --title "Toolpy APK (mais recente)" \
+            --notes "APK de depuração gerado automaticamente do commit ${GITHUB_SHA::7}."
