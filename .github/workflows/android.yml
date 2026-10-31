@@ -36,7 +36,23 @@ jobs:
 
       - name: Aceitar licenças e garantir o SDK necessário
         run: |
-          SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort -r | head -n1)
+          SDK_ROOT=""
+          for root in "$ANDROID_SDK_ROOT" "$ANDROID_HOME" "/usr/local/lib/android/sdk"; do
+            if [ -n "$root" ] && [ -d "$root/cmdline-tools" ]; then
+              SDK_ROOT="$root"
+              break
+            fi
+          done
+          if [ -z "$SDK_ROOT" ]; then
+            echo "::error::Não achei uma pasta cmdline-tools em ANDROID_SDK_ROOT ($ANDROID_SDK_ROOT), ANDROID_HOME ($ANDROID_HOME) nem em /usr/local/lib/android/sdk"
+            exit 1
+          fi
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort -r | head -n1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::Achei $SDK_ROOT/cmdline-tools mas nenhum binário sdkmanager dentro"
+            find "$SDK_ROOT/cmdline-tools" -maxdepth 3
+            exit 1
+          fi
           echo "Usando: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0"
