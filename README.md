@@ -1,4 +1,4 @@
-# Vida de Ferramentas
+# Toolpy — Vida de Ferramentas
 
 App para acompanhar a vida útil das ferramentas por operação, com leitura
 automática da tela "VARIAVEL MACRO" do painel Mazak a partir de uma foto.
@@ -77,15 +77,18 @@ guardado no aparelho e funciona offline.
 ## Estrutura do projeto
 
 ```
-index.html          página principal, meta tags do PWA
-public/manifest.json ícone, nome e cores do app instalado
-public/sw.js         cache simples pra funcionar offline
-public/icons/        ícones do app
-src/main.jsx         ponto de entrada do React
-src/App.jsx          toda a interface: Célula → Máquina → Operação → Ferramenta
-src/ocr.js           leitura da foto (Tesseract.js) e casamento #NNN → valor
-src/storage.js        salvar/carregar os dados no navegador
-.github/workflows/    publica automaticamente a cada atualização
+index.html             página principal, meta tags do PWA
+public/manifest.json   ícone, nome e cores do app instalado
+public/sw.js           cache simples pra funcionar offline
+public/icons/          ícones do app
+src/main.jsx           ponto de entrada do React
+src/App.jsx            toda a interface: Célula → Máquina → Operação → Ferramenta
+src/ocr.js             leitura da foto — ML Kit nativo quando é o app Android,
+                        Tesseract.js quando é a versão de navegador
+src/storage.js          salvar/carregar os dados no navegador
+.github/workflows/      publica o site e (separadamente) gera o APK Android
+android/                projeto Android (gerado pelo Capacitor — ver seção abaixo)
+capacitor.config.json  configuração do app Android (aponta pro site publicado)
 ```
 
 ## Como os dados são organizados
@@ -107,6 +110,30 @@ operações e ferramentas de" — isso copia slot, código BMAN, vida útil e
 desgaste por peça, mas zera a vida atual, já que é um jogo de ferramentas
 físico separado, com desgaste próprio.
 
+
+## App Android (leitura de foto melhor, com o ML Kit do Google)
+
+Além do site (que funciona em qualquer navegador), existe um app Android
+de verdade — ele só mostra o mesmo site publicado dentro de uma "casca"
+nativa, mas por dentro dessa casca a leitura de foto usa o **ML Kit do
+Google**, que é gratuito, roda no aparelho (sem internet) e é bem mais
+preciso que o Tesseract.js usado no navegador. Se alguma foto falhar no
+ML Kit por algum motivo raro, o app cai de volta pro Tesseract sozinho —
+nunca trava.
+
+**Como conseguir o `.apk`:**
+1. Na aba **Actions** do repositório, abra o fluxo **"Gerar APK Android
+   (Toolpy)"**.
+2. Se não tiver rodado automaticamente, clique em **Run workflow**.
+3. Quando terminar (uns 3-5 minutos), abra a execução e baixe o arquivo
+   em **Artifacts** → `toolpy-debug-apk`.
+4. Transfira o `.apk` pro celular e instale (o Android vai pedir pra
+   permitir "instalar de fontes desconhecidas" — é normal pra um app que
+   não veio da Play Store).
+
+Esse app só precisa ser gerado de novo quando algo dentro da pasta
+`android/` mudar (como o próprio leitor ML Kit) — ajustes de tela comuns
+aparecem sozinhos, porque o app carrega o site ao vivo.
 
 ## Rodando localmente (opcional, se você tiver Node.js instalado)
 

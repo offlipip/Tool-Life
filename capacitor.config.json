@@ -1,0 +1,13 @@
+{
+  "appId": "io.github.offlipip.toolpy",
+  "appName": "Toolpy",
+  "webDir": "dist",
+  "server": {
+    "url": "https://offlipip.github.io/Tool-Life/",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

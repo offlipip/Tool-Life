@@ -1,0 +1,50 @@
+name: Gerar APK Android (Toolpy)
+
+# Builda o app Android de dentro do repositório (este ambiente de build
+# tem o SDK do Android completo, diferente do computador usado pra
+# preparar os arquivos). O app nativo só carrega o site publicado no
+# GitHub Pages (ver capacitor.config.json) — então, no dia a dia, só
+# precisa gerar um APK novo quando alguma coisa dentro da pasta
+# android/ mudar (como o leitor de foto nativo), não a cada ajuste de
+# tela comum.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - run: npm install
+      - run: npm run build
+      - run: npx cap sync android
+
+      - name: Compilar APK de depuração
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolpy-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

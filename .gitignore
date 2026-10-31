@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# Projeto Android (gerado automaticamente por "npx cap add android" —
+# o build pesado roda no GitHub Actions, não precisa ficar aqui)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.apk
+*.aab

@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import {
   Plus, Minus, ChevronDown, ChevronRight, Camera, Image as ImageIcon, Pencil, Trash2, Check, X,
   AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon, ArrowLeft, Download, Upload,
+  GripVertical,
 } from 'lucide-react';
 import { readPanelPhoto, readProgramPhoto } from './ocr.js';
 import { loadData, saveData, exportBackup, importBackup } from './storage.js';
@@ -28,6 +29,11 @@ const C = {
   warnSoft: 'rgba(232, 185, 63, 0.14)',
   crit: '#e5534b',
   critSoft: 'rgba(229, 83, 75, 0.14)',
+  // Toque de identidade Tupy (sem usar a marca em si): o azul-marinho da
+  // empresa, usado só no selo/ícone do app — o resto da interface
+  // continua no esquema escuro/laranja já calibrado.
+  brandNavy: '#0f2d5c',
+  brandNavySoft: 'rgba(42, 92, 161, 0.18)',
 };
 
 const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
@@ -639,11 +645,41 @@ function LimitePhotoButton({ readings, onReady }) {
 /* Add-tool inline form                                                   */
 /* ---------------------------------------------------------------------- */
 
-function NewToolForm({ onAdd, compact, limiteReadings, blockPreset }) {
+function NewToolForm({ onAdd, compact, limiteReadings, blockPreset, hideProgramPhoto }) {
   const presetDesgaste = String(desgasteForPreset(blockPreset));
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: presetDesgaste, isRoutine: false };
   const [t, setT] = useState(blank);
   const [vuFromPhoto, setVuFromPhoto] = useState(false);
+  const [programStatus, setProgramStatus] = useState('idle'); // idle | loading | error
+  const [programError, setProgramError] = useState('');
+  const [programCandidates, setProgramCandidates] = useState([]);
+  const programCamRef = useRef(null);
+  const programGalRef = useRef(null);
+
+  async function handleProgramPhoto(file) {
+    setProgramStatus('loading');
+    setProgramError('');
+    try {
+      const found = await readProgramPhoto(file);
+      if (found.length === 0) {
+        setProgramStatus('error');
+        setProgramError('nenhuma ferramenta reconhecida nessa foto');
+        return;
+      }
+      setProgramCandidates(found);
+      setProgramStatus('idle');
+    } catch (err) {
+      setProgramStatus('error');
+      setProgramError(err.message);
+    }
+  }
+  function pickProgramFile(ref) {
+    return (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleProgramPhoto(f); };
+  }
+  function useCandidate(found) {
+    setT((prev) => ({ ...prev, slot: found.slot, bman: found.bman }));
+    setProgramCandidates((prev) => prev.filter((c) => c !== found));
+  }
 
   // Se uma foto da tela de vida útil já foi lida (pelo botão acima, no
   // pai), assim que o slot bate com um #80N conhecido, preenche sozinho.
@@ -679,6 +715,43 @@ function NewToolForm({ onAdd, compact, limiteReadings, blockPreset }) {
 
   return (
     <div style={{ padding: compact ? '10px' : '12px', background: C.surfaceRaised, borderRadius: 8, border: `1px dashed ${C.borderLight}` }}>
+      {!hideProgramPhoto && (
+        <div style={{ marginBottom: 10 }}>
+          <input ref={programCamRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pickProgramFile(programCamRef)} />
+          <input ref={programGalRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pickProgramFile(programGalRef)} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => programCamRef.current?.click()}
+              disabled={programStatus === 'loading'}
+              className="flex items-center gap-1.5 justify-center"
+              style={{ flex: 1, background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: programStatus === 'loading' ? 'default' : 'pointer' }}
+            >
+              {programStatus === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+              {programStatus === 'loading' ? 'Lendo programa...' : 'Ler slot e código do programa'}
+            </button>
+            <IconBtn title="Da galeria" onClick={() => programGalRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
+          </div>
+          {programStatus === 'error' && (
+            <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui reconhecer nada nessa foto{programError ? ` (${programError})` : ''}. Cadastre manualmente ou tente outra.</div>
+          )}
+          {programCandidates.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>Toque na ferramenta lida pra preencher slot + código (confira antes de salvar):</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {programCandidates.map((c) => (
+                  <button
+                    key={c.slot}
+                    onClick={() => useCandidate(c)}
+                    style={{ background: C.surfaceDeep, color: C.text, border: `1px solid ${C.border}`, borderRadius: 999, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}
+                  >
+                    {c.slot} · {c.bman}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex gap-2 mb-2">
         <Field label="Slot">
           <SlotSelect value={t.slot} onChange={(v) => setT({ ...t, slot: v })} />
@@ -925,7 +998,7 @@ function AddOperationPanel({ onSave, onCancel, blockPreset }) {
       <div style={{ marginTop: 10 }}>
         <ProgramPhotoButton onTools={addToolsFromProgram} />
         <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} blockPreset={blockPreset} />
+        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} blockPreset={blockPreset} hideProgramPhoto />
       </div>
 
       {tools.length > 0 && (
@@ -1385,7 +1458,7 @@ function AddMachinePanel({ onSave, onCancel, otherMachines }) {
 
 /* Item da lista de células — cartão compacto que "entra" na célula ao
    tocar, em vez de expandir tudo aninhado na mesma tela. */
-function CellListItem({ cell, onOpen }) {
+function CellListItem({ cell, onOpen, unlocked, onDragHandlePointerDown, dragging }) {
   const rows = flattenToolRows([cell])
     .map((r) => computeRemaining(r.tool, cell.blockPreset || '6cc'))
     .filter((r) => r !== null);
@@ -1397,9 +1470,23 @@ function CellListItem({ cell, onOpen }) {
       onClick={onOpen}
       style={{
         display: 'flex', alignItems: 'center', gap: 11, padding: '14px 13px', cursor: 'pointer',
-        background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, marginBottom: 9,
+        background: dragging ? C.surfaceRaised : C.surface, borderRadius: 10,
+        border: `1px solid ${dragging ? C.borderLight : C.border}`, marginBottom: 9,
       }}
     >
+      {unlocked && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={onDragHandlePointerDown}
+          title="Arrastar para reordenar"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            width: 26, height: 34, margin: '0 -4px 0 -6px', cursor: 'grab', touchAction: 'none',
+          }}
+        >
+          <GripVertical size={16} color={C.textFaint} />
+        </div>
+      )}
       <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         <Layers size={16} color={C.accent} />
       </div>
@@ -1416,6 +1503,89 @@ function CellListItem({ cell, onOpen }) {
         </div>
       )}
       <ChevronRight size={18} color={C.textFaint} />
+    </div>
+  );
+}
+
+/* Lista de células com reordenação por arrastar — só ativa com o cadeado
+   aberto. Segura a alça (ícone de grip) de uma célula e arrasta pra cima
+   ou pra baixo; uma linha laranja mostra onde ela vai cair ao soltar. */
+function ReorderableCellList({ cells, onOpen, onReorder, unlocked }) {
+  const itemRefs = useRef({});
+  const [drag, setDrag] = useState(null); // { id, startY, y, order, rects, targetIndex }
+
+  function startDrag(cellId) {
+    return (e) => {
+      e.preventDefault();
+      const order = cells.map((c) => c.id);
+      const rects = {};
+      order.forEach((cid) => {
+        const node = itemRefs.current[cid];
+        if (node) rects[cid] = node.getBoundingClientRect();
+      });
+      setDrag({ id: cellId, startY: e.clientY, y: e.clientY, order, rects, targetIndex: order.indexOf(cellId) });
+      e.target.setPointerCapture?.(e.pointerId);
+    };
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    const y = e.clientY;
+    // targetIndex vai de 0 até drag.order.length (inclusive): esse último
+    // valor significa "depois do último item da lista".
+    let targetIndex = drag.order.length;
+    for (let i = 0; i < drag.order.length; i++) {
+      const r = drag.rects[drag.order[i]];
+      if (!r) continue;
+      if (y < r.top + r.height / 2) { targetIndex = i; break; }
+    }
+    setDrag((d) => (d ? { ...d, y, targetIndex } : d));
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    const { id, order, targetIndex } = drag;
+    const withoutDragged = order.filter((cid) => cid !== id);
+    const insertAt = Math.min(targetIndex, withoutDragged.length);
+    const next = [...withoutDragged];
+    next.splice(insertAt, 0, id);
+    if (next.join() !== order.join()) {
+      onReorder(next.map((cid) => cells.find((c) => c.id === cid)).filter(Boolean));
+    }
+    setDrag(null);
+  }
+
+  const offset = drag ? drag.y - drag.startY : 0;
+
+  return (
+    <div onPointerMove={onMove} onPointerUp={endDrag} onPointerCancel={endDrag}>
+      {cells.map((cell, i) => (
+        <React.Fragment key={cell.id}>
+          {drag && drag.targetIndex === i && (
+            <div style={{ height: 3, background: C.accent, borderRadius: 2, marginBottom: 6 }} />
+          )}
+          <div
+            ref={(node) => { itemRefs.current[cell.id] = node; }}
+            style={{
+              transform: drag?.id === cell.id ? `translateY(${offset}px) scale(1.02)` : 'none',
+              boxShadow: drag?.id === cell.id ? '0 10px 24px rgba(0,0,0,0.45)' : 'none',
+              position: drag?.id === cell.id ? 'relative' : 'static',
+              zIndex: drag?.id === cell.id ? 5 : 'auto',
+            }}
+          >
+            <CellListItem
+              cell={cell}
+              onOpen={() => { if (!drag) onOpen(cell.id); }}
+              unlocked={unlocked}
+              dragging={drag?.id === cell.id}
+              onDragHandlePointerDown={startDrag(cell.id)}
+            />
+          </div>
+        </React.Fragment>
+      ))}
+      {drag && drag.targetIndex === cells.length && (
+        <div style={{ height: 3, background: C.accent, borderRadius: 2, marginBottom: 6 }} />
+      )}
     </div>
   );
 }
@@ -1652,7 +1822,13 @@ function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName
           );
         })}
       </div>
-      <div style={{ fontSize: 10.5, color: C.textFaint, textAlign: 'center', marginTop: 6 }}>Célula · Máquina · Operação</div>
+      {/* Alinhada à mesma coluna onde o texto aparece em cada linha (depois
+          da bolinha de status), não centralizada na largura toda — e some
+          "Célula" daqui quando já estamos dentro da célula (hideCellName),
+          senão fica redundante com o cabeçalho da tela. */}
+      <div style={{ fontSize: 10.5, color: C.textFaint, textAlign: 'left', marginTop: 6, paddingLeft: 29 }}>
+        {hideCellName ? 'Máquina · Operação' : 'Célula · Máquina · Operação'}
+      </div>
     </div>
   );
 }
@@ -1896,6 +2072,11 @@ export default function App() {
   function renameCell(cellId, name) {
     if (!name.trim()) return;
     persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, name: name.trim() })));
+  }
+  // Reordenar a lista de células (arrastar pela alça, só com o cadeado
+  // aberto) — recebe a lista inteira já na nova ordem.
+  function reorderCells(nextCells) {
+    persist(() => nextCells);
   }
 
   function addMachine(cellId, machine) {
@@ -2243,11 +2424,12 @@ export default function App() {
       <div style={{ maxWidth: 480, margin: '0 auto', padding: '18px 14px 90px' }}>
         {!selectedCell && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Wrench size={17} color={C.accent} />
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: C.brandNavy, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Wrench size={17} color="#fff" />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Vida de ferramentas</div>
+              <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Toolpy</div>
+              <div style={{ fontSize: 10.5, color: C.textFaint }}>Vida de ferramentas</div>
             </div>
             <IconBtn title="Exportar backup" onClick={handleExport}><Download size={16} color={C.textDim} /></IconBtn>
             <IconBtn title="Importar backup" onClick={() => importInputRef.current?.click()}><Upload size={16} color={C.textDim} /></IconBtn>
@@ -2353,9 +2535,7 @@ export default function App() {
               </div>
             )}
 
-            {cells.map((cell) => (
-              <CellListItem key={cell.id} cell={cell} onOpen={() => openCell(cell.id)} />
-            ))}
+            <ReorderableCellList cells={cells} onOpen={openCell} onReorder={reorderCells} unlocked={editUnlocked} />
           </>
         )}
       </div>

@@ -1,4 +1,51 @@
 import { createWorker } from 'tesseract.js';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
+// Ponte pro ML Kit do Google (grátis, on-device) — só existe quando o
+// app roda dentro do apk Android nativo (ver MlKitOcrPlugin.java). No
+// navegador (versão GitHub Pages) isPluginAvailable() volta false e o
+// app continua usando o Tesseract.js normalmente, sem nenhuma mudança
+// de comportamento pra quem usa só a versão web.
+const MlKitOcr = registerPlugin('MlKitOcr');
+
+function hasMlKit() {
+  try {
+    return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable('MlKitOcr');
+  } catch {
+    return false;
+  }
+}
+
+async function toBase64(input) {
+  const isCanvas = typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement;
+  const dataUrl = isCanvas
+    ? input.toDataURL('image/jpeg', 0.92)
+    : await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('read_failed'));
+      reader.readAsDataURL(input);
+    });
+  return dataUrl.split(',')[1];
+}
+
+/**
+ * Manda a foto pro ML Kit nativo e devolve no MESMO formato que o
+ * Tesseract devolve (palavras com texto + caixa x0,y0,x1,y1), pra
+ * reaproveitar parseRows/leitura de linhas sem duplicar lógica.
+ */
+async function recognizeWithMlKit(input) {
+  const base64 = await toBase64(input);
+  const { words, fullText } = await MlKitOcr.recognizeText({ base64 });
+  return {
+    fullText: fullText || '',
+    words: (words || []).map((w) => ({
+      text: w.text,
+      confidence: 92,
+      bbox: { x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1 },
+    })),
+  };
+}
 
 // Dois workers separados: um afinado pra tabela de números (só dígitos,
 // leitura esparsa) e outro pra texto livre (comentário do programa CNC,
@@ -244,6 +291,14 @@ function parseRows(words) {
  * Aceita um File (foto original) ou um HTMLCanvasElement (recortado).
  */
 export async function readPanelPhoto(input) {
+  if (hasMlKit()) {
+    try {
+      const { words } = await recognizeWithMlKit(input);
+      return parseRows(words);
+    } catch {
+      // ML Kit falhou por algum motivo (raro) — cai pro Tesseract abaixo.
+    }
+  }
   const canvas = await preprocess(input);
   const worker = await getDigitWorker();
   const { data } = await worker.recognize(canvas);
@@ -258,12 +313,8 @@ export async function readPanelPhoto(input) {
  * que a grade de números — trate como um rascunho pra conferir, não
  * como leitura garantida.
  */
-export async function readProgramPhoto(input) {
-  const canvas = await preprocess(input, 2000);
-  const worker = await getTextWorker();
-  const { data } = await worker.recognize(canvas);
-  const lines = (data.text || '').split('\n');
-
+function parseProgramLines(text) {
+  const lines = (text || '').split('\n');
   const seen = new Set();
   const results = [];
   lines.forEach((line) => {
@@ -276,4 +327,20 @@ export async function readProgramPhoto(input) {
     results.push({ slot, bman });
   });
   return results;
+}
+
+export async function readProgramPhoto(input) {
+  if (hasMlKit()) {
+    try {
+      const { fullText } = await recognizeWithMlKit(input);
+      const results = parseProgramLines(fullText);
+      if (results.length > 0) return results;
+    } catch {
+      // ML Kit falhou por algum motivo (raro) — cai pro Tesseract abaixo.
+    }
+  }
+  const canvas = await preprocess(input, 2000);
+  const worker = await getTextWorker();
+  const { data } = await worker.recognize(canvas);
+  return parseProgramLines(data.text || '');
 }
