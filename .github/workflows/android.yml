@@ -59,7 +59,18 @@ jobs:
 
       - run: npm install
       - run: npm run build
-      - run: npx cap sync android
+
+      - name: Sincronizar Capacitor (Android)
+        id: capsync
+        continue-on-error: true
+        run: npx cap sync android > cap-sync.log 2>&1
+
+      - name: Mostrar erro do cap sync, se tiver
+        if: steps.capsync.outcome == 'failure'
+        run: |
+          cat cap-sync.log
+          tail -n 25 cap-sync.log | while IFS= read -r line; do echo "::error::$line"; done
+          exit 1
 
       - name: Compilar APK de depuração
         working-directory: android
