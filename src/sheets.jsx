@@ -415,16 +415,20 @@ export function CalibrationSheet({ machineId }) {
   const fm = findMachine(cells, machineId);
   const machine = fm?.machine;
   const cal = machine?.calibration;
-  const pallets = machine ? Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort() : [];
-  const [pieces, setPieces] = useState(() => Object.fromEntries(pallets.map((p) => [p, ''])));
+  // Grupo de peças: Pallet 1, Pallet 2, ou 0 = operações sem pallet
+  // definido (antes elas ficavam sem campo e não dava pra salvar).
+  const groupOf = (op) => (op.pallet === 1 || op.pallet === 2 ? op.pallet : 0);
+  const groups = machine ? Array.from(new Set(machine.operations.filter((o) => o.tools.length).map(groupOf))).sort() : [];
+  const [pieces, setPieces] = useState({});
   if (!cal || cal.phase !== 'ready') return null;
+  const groupLabel = (g) => (g === 0 ? (groups.length === 1 ? 'Peças produzidas' : 'Operações sem pallet') : `Pallet ${g}`);
+  const groupOps = (g) => machine.operations.filter((o) => groupOf(o) === g && o.tools.length).map((o) => o.name).join(', ');
 
   const rows = [];
   machine.operations.forEach((op) => {
-    if (op.pallet !== 1 && op.pallet !== 2) return;
     op.tools.forEach((t) => {
-      if (t.isRoutine || !(t.id in cal.snapshot) || !(t.id in cal.finish)) return;
-      const n = parseInt(pieces[op.pallet], 10);
+      if (t.isRoutine || !(t.id in (cal.snapshot || {})) || !(t.id in (cal.finish || {}))) return;
+      const n = parseInt(pieces[groupOf(op)], 10);
       const valid = !isNaN(n) && n > 0;
       const s = cal.snapshot[t.id];
       const f = cal.finish[t.id];
@@ -442,14 +446,15 @@ export function CalibrationSheet({ machineId }) {
         </Button>
         <Button variant="dangerSoft" onClick={() => { act.cancelCalibration(machineId); nav.close(); }}>Descartar calibração</Button>
       </>}>
-      <div style={{ fontSize: 15, color: C.muted }}>Quantas peças rodaram em cada pallet entre a leitura de início e a de fim?</div>
-      {pallets.map((p) => (
-        <Field key={p} label={`Pallet ${p}`}>
-          <TextInput mono inputMode="numeric" value={pieces[p] || ''} placeholder="0" onChange={(e) => setPieces((prev) => ({ ...prev, [p]: e.target.value }))} />
+      <div style={{ fontSize: 15, color: C.muted }}>Quantas peças rodaram entre a leitura de início e a de fim?</div>
+      {groups.map((g) => (
+        <Field key={g} label={groupLabel(g)} hint={groupOps(g)}>
+          <TextInput mono inputMode="numeric" value={pieces[g] || ''} placeholder="0" onChange={(e) => setPieces((prev) => ({ ...prev, [g]: e.target.value }))}
+            style={{ fontSize: 20, textAlign: 'center' }} />
         </Field>
       ))}
       <div>
-        {rows.length === 0 && <div style={{ fontSize: 15, color: C.muted }}>Nenhuma ferramenta pra calibrar (confira se as operações têm pallet e se as duas leituras trouxeram a vida atual).</div>}
+        {rows.length === 0 && <div style={{ fontSize: 15, color: C.muted }}>Nenhuma ferramenta pra calibrar — confira se as duas leituras (início e fim) trouxeram a vida atual das ferramentas.</div>}
         {rows.map((r) => (
           <div key={r.toolId} style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 48, borderBottom: `1px solid ${C.divider}` }}>
             <span style={{ fontFamily: MONO, fontSize: 17, fontWeight: 600, width: 52 }}>{r.slot}</span>
