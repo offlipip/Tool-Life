@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import {
   Wrench, StickyNote, Pencil, Check, Plus, Camera, Factory, ChevronRight, GripVertical, Trash2, Home, LayoutGrid,
   Settings, Download, Upload, SlidersHorizontal, Bell, AlertTriangle, CheckCircle2, Keyboard, Layers,
-  RotateCcw, X, Copy, Heart,
+  RotateCcw, X, Copy, Heart, LifeBuoy,
 } from 'lucide-react';
 import { C, MONO, SANS, STATUS, SAFE_TOP, SAFE_BOTTOM } from './theme.js';
 import { TopBar, IconButton, Button, Chip, ChipRow, Card, SectionTitle, Badge, LifeBar, EmptyState, Notice, TextInput } from './ui.jsx';
@@ -532,7 +532,7 @@ export function NotesScreen({ lockedCellId }) {
 /* ---------------------------------------------------------------------- */
 
 export function SettingsScreen() {
-  const { cells, act } = useApp();
+  const { cells, act, nav } = useApp();
   const inputRef = useRef(null);
   const textRef = useRef(null);
   const [pending, setPending] = useState(null);
@@ -581,6 +581,15 @@ export function SettingsScreen() {
     <>
       <TopBar title="Ajustes" big />
       <div style={{ padding: '18px 16px 0', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <button type="button" onClick={() => nav.push({ type: 'help' })}
+          style={{ background: C.navy, color: '#fff', border: 'none', borderRadius: 16, padding: '16px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', fontFamily: SANS, textAlign: 'left' }}>
+          <span style={{ width: 46, height: 46, borderRadius: 12, background: 'rgba(255,255,255,0.16)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><LifeBuoy size={24} /></span>
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontSize: 18, fontWeight: 700 }}>Ajuda</span>
+            <span style={{ display: 'block', fontSize: 14.5, color: C.onNavyMuted, marginTop: 2 }}>Tutorial completo de como usar o app</span>
+          </span>
+          <ChevronRight size={24} />
+        </button>
         <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Backup</div>
           <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.45 }}>

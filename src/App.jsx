@@ -14,8 +14,9 @@ import {
   AddOperationSheet, AddToolSheet, EditOperationSheet, CopyFromSheet, CellSettingsSheet,
 } from './sheets.jsx';
 import { CropModal, OcrReviewSheet } from './tooling.jsx';
+import { HelpScreen } from './help.jsx';
 
-const PAGE_TYPES = ['cell', 'cellNotes'];
+const PAGE_TYPES = ['cell', 'cellNotes', 'help'];
 
 export default function App() {
   const [cells, setCells] = useState(() => loadData().cells);
@@ -296,6 +297,7 @@ export default function App() {
 
   let base;
   if (page?.type === 'cell') base = <CellScreen key={page.cellId} cellId={page.cellId} />;
+  else if (page?.type === 'help') base = <HelpScreen />;
   else if (page?.type === 'cellNotes') base = <NotesScreen key={`n${page.cellId}`} lockedCellId={page.cellId} />;
   else if (tab === 'celulas') base = <CellsScreen />;
   else if (tab === 'notas') base = <NotesScreen />;
