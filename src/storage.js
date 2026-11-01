@@ -15,6 +15,8 @@ export function migrateCells(cells) {
     return {
       ...c,
       blockPreset: preset,
+      // Anotações por célula (versões antigas não tinham)
+      notes: Array.isArray(c.notes) ? c.notes : [],
       machines: (c.machines || []).map((m) => ({
         ...m,
         operations: (m.operations || []).map((o) => ({

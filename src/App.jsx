@@ -1,2021 +1,26 @@
-import React, { useState, useRef, useCallback } from 'react';
-import {
-  Plus, Minus, ChevronDown, ChevronRight, Camera, Image as ImageIcon, Pencil, Trash2, Check, X,
-  AlertTriangle, RotateCcw, Loader2, Wrench, Layers, Cpu, Copy, Lock, Unlock, Crop as CropIcon, ArrowLeft, Download, Upload,
-  GripVertical,
-} from 'lucide-react';
-import { readPanelPhoto, readProgramPhoto } from './ocr.js';
+import React, { useState, useCallback, useRef } from 'react';
+import { C, SANS } from './theme.js';
+import { AppCtx } from './actions.js';
 import { loadData, saveData, exportBackup, importBackup } from './storage.js';
-
-/* ---------------------------------------------------------------------- */
-/* Design tokens                                                          */
-/* ---------------------------------------------------------------------- */
-
-const C = {
-  bg: '#15181b',
-  surface: '#1d2125',
-  surfaceRaised: '#242a2f',
-  surfaceDeep: '#191d20',
-  border: '#2c3237',
-  borderLight: '#3a4148',
-  text: '#f0ece5',
-  textDim: '#e5c9ae',
-  textFaint: '#d9a374',
-  accent: '#ff8a3d',
-  accentSoft: 'rgba(255, 138, 61, 0.14)',
-  ok: '#5fbf77',
-  okSoft: 'rgba(95, 191, 119, 0.14)',
-  warn: '#e8b93f',
-  warnSoft: 'rgba(232, 185, 63, 0.14)',
-  crit: '#e5534b',
-  critSoft: 'rgba(229, 83, 75, 0.14)',
-  // Toque de identidade Tupy (sem usar a marca em si): o azul-marinho da
-  // empresa, usado só no selo/ícone do app — o resto da interface
-  // continua no esquema escuro/laranja já calibrado.
-  brandNavy: '#0f2d5c',
-  brandNavySoft: 'rgba(42, 92, 161, 0.18)',
-};
-
-const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-const MONO = 'ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace';
-
-const CRITICAL_MAX = 10;
-const WARNING_MAX = 30;
-
-/* ---------------------------------------------------------------------- */
-/* Helpers                                                                 */
-/* ---------------------------------------------------------------------- */
-
-function genId(prefix) {
-  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function slotDigits(slot) {
-  const m = (slot || '').match(/\d+/);
-  return m ? parseInt(m[0], 10) : null;
-}
-
-function slotToAtualNum(slot) {
-  const d = slotDigits(slot);
-  return d === null ? null : 900 + d;
-}
-
-function slotToLimiteNum(slot) {
-  const d = slotDigits(slot);
-  return d === null ? null : 800 + d;
-}
-
-// Ordena por número do slot (T01, T02, T03...) em vez da ordem de
-// cadastro, que é como as ferramentas ficam mais fáceis de achar.
-function compareSlots(a, b) {
-  const da = slotDigits(a);
-  const db = slotDigits(b);
-  if (da !== null && db !== null && da !== db) return da - db;
-  return String(a || '').localeCompare(String(b || ''));
-}
-
-// Cadeado global: enquanto travado, tocar numa ferramenta não abre o
-// formulário de edição — só o botão de zerar (sempre disponível) funciona.
-const EditLockContext = React.createContext({ unlocked: false });
-
-function desgasteForPreset(preset) {
-  return preset === '4cc' ? 1 : 1.5;
-}
-
-/**
- * Cada ferramenta guarda um desgaste POR BLOCO (ex: {'6cc':1.5,'4cc':1}),
- * porque o mesmo T pode gastar diferente dependendo do bloco rodado.
- * Se ainda não foi calibrado pra esse bloco, usa o chute padrão (1 ou
- * 1.5) só como ponto de partida.
- */
-function getToolDesgaste(tool, preset) {
-  const d = tool.desgastePeca;
-  if (d && typeof d === 'object') {
-    const v = d[preset];
-    return (typeof v === 'number' && v > 0) ? v : desgasteForPreset(preset);
-  }
-  return (typeof d === 'number' && d > 0) ? d : desgasteForPreset(preset);
-}
-function isCalibrated(tool, preset) {
-  const d = tool.desgastePeca;
-  return !!(d && typeof d === 'object' && typeof d[preset] === 'number' && d[preset] > 0);
-}
-
-function computeRemaining(tool, preset) {
-  if (tool.isRoutine) return null;
-  const desg = getToolDesgaste(tool, preset);
-  const vu = parseFloat(tool.vidaUtil);
-  const va = parseFloat(tool.vidaAtual);
-  if (!desg || desg <= 0 || isNaN(vu) || vu <= 0 || isNaN(va)) return null;
-  return Math.floor((vu - va) / desg);
-}
-
-function statusFor(remaining) {
-  if (remaining === null) return 'routine';
-  if (remaining <= 0) return 'expired';
-  if (remaining <= CRITICAL_MAX) return 'critical';
-  if (remaining <= WARNING_MAX) return 'warning';
-  return 'ok';
-}
-
-const STATUS_COLOR = { routine: C.textFaint, expired: C.crit, critical: C.crit, warning: C.warn, ok: C.ok };
-const STATUS_SOFT = { routine: 'transparent', expired: C.critSoft, critical: C.critSoft, warning: C.warnSoft, ok: C.okSoft };
-
-function fmtNum(v) {
-  if (v === null || v === undefined || v === '') return '—';
-  const n = parseFloat(v);
-  if (isNaN(n)) return '—';
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-/* ---------------------------------------------------------------------- */
-/* Tree helpers — cada nó (célula/máquina/operação/ferramenta) tem um id  */
-/* próprio e único, então as funções abaixo acham e atualizam qualquer    */
-/* nível sem precisar receber o caminho inteiro (cellId+machineId+...).    */
-/* ---------------------------------------------------------------------- */
-
-function updateCellById(cells, cellId, fn) {
-  return cells.map((c) => (c.id === cellId ? fn(c) : c));
-}
-function updateMachineById(cells, machineId, fn) {
-  return cells.map((c) => ({ ...c, machines: c.machines.map((m) => (m.id === machineId ? fn(m) : m)) }));
-}
-function updateOperationById(cells, opId, fn) {
-  return cells.map((c) => ({
-    ...c,
-    machines: c.machines.map((m) => ({ ...m, operations: m.operations.map((o) => (o.id === opId ? fn(o) : o)) })),
-  }));
-}
-function updateToolById(cells, opId, toolId, fn) {
-  return updateOperationById(cells, opId, (o) => ({ ...o, tools: o.tools.map((t) => (t.id === toolId ? fn(t) : t)) }));
-}
-
-function flattenMachines(cells) {
-  const out = [];
-  cells.forEach((c) => c.machines.forEach((m) => out.push({ cellName: c.name, cellId: c.id, machine: m })));
-  return out;
-}
-function flattenToolRows(cells) {
-  const out = [];
-  cells.forEach((c) => c.machines.forEach((m) => m.operations.forEach((o) => o.tools.forEach((t) => {
-    out.push({ cellName: c.name, machineName: m.name, opName: o.name, opId: o.id, tool: t, preset: c.blockPreset || '6cc' });
-  }))));
-  return out;
-}
-function cloneOperationsForNewMachine(operations) {
-  return operations.map((op) => ({
-    id: genId('op'),
-    name: op.name,
-    pallet: op.pallet ?? null,
-    tools: op.tools.map((t) => ({ ...t, id: genId('tool'), vidaAtual: 0, lastUpdated: null })),
-  }));
-}
-
-/* ---------------------------------------------------------------------- */
-/* Small UI primitives                                                    */
-/* ---------------------------------------------------------------------- */
-
-function IconBtn({ onClick, children, title, danger }) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className="flex items-center justify-center rounded-md"
-      style={{ width: 32, height: 32, color: danger ? C.crit : C.textDim, background: 'transparent', border: 'none', cursor: 'pointer' }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="flex flex-col gap-1" style={{ flex: 1, minWidth: 0 }}>
-      <span style={{ fontSize: 12, color: C.textDim }}>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-const TextInput = React.forwardRef(function TextInput(props, ref) {
-  return (
-    <input
-      {...props}
-      ref={ref}
-      onFocus={(e) => {
-        props.onFocus?.(e);
-        // dá tempo do teclado abrir e o viewport encolher antes de rolar,
-        // senão calcula a posição errada e o campo fica atrás dele
-        setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
-      }}
-      className="w-full"
-      style={{
-        background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: 6,
-        padding: '7px 9px', fontSize: 14, color: C.text, fontFamily: MONO,
-        outline: 'none', ...(props.style || {}),
-      }}
-    />
-  );
-});
-
-function Select(props) {
-  return (
-    <select
-      {...props}
-      className="w-full"
-      style={{
-        background: C.surfaceRaised, border: `1px solid ${C.border}`, borderRadius: 6,
-        padding: '7px 9px', fontSize: 13, color: C.text, fontFamily: SANS,
-        outline: 'none', ...(props.style || {}),
-      }}
-    />
-  );
-}
-
-/* Seletor de slot T01–T49 — evita digitar (e digitar errado) o número
-   da ferramenta no celular. */
-function SlotSelect({ value, onChange }) {
-  return (
-    <select
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full"
-      style={{
-        background: C.surfaceRaised, border: `1px solid ${value ? C.borderLight : C.border}`, borderRadius: 6,
-        padding: '7px 9px', fontSize: 14, color: value ? C.text : C.textFaint, fontFamily: MONO,
-        outline: 'none', appearance: 'none',
-      }}
-    >
-      <option value="">Escolher…</option>
-      {Array.from({ length: 49 }, (_, i) => `T${String(i + 1).padStart(2, '0')}`).map((s) => (
-        <option key={s} value={s}>{s}</option>
-      ))}
-    </select>
-  );
-}
-
-function GaugeBar({ pct, color }) {
-  return (
-    <div style={{ height: 5, width: '100%', background: C.border, borderRadius: 3, overflow: 'hidden' }}>
-      <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 300ms ease' }} />
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Recorte da foto — arrasta os dois cantos pra excluir menu/reflexo antes */
-/* de mandar pro OCR. Sem zoom/pinça: só os dois pontos definem o retângulo. */
-/* ---------------------------------------------------------------------- */
-
-function CropModal({ file, title, onConfirm, onCancel }) {
-  const [imgUrl, setImgUrl] = useState(null);
-  const [natural, setNatural] = useState({ w: 1, h: 1 });
-  const [rect, setRect] = useState({ x0: 4, y0: 12, x1: 96, y1: 88 });
-  const containerRef = useRef(null);
-  const dragRef = useRef(null);
-
-  React.useEffect(() => {
-    const url = URL.createObjectURL(file);
-    setImgUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
-  function pointerToPercent(clientX, clientY) {
-    const box = containerRef.current.getBoundingClientRect();
-    const px = Math.min(100, Math.max(0, ((clientX - box.left) / box.width) * 100));
-    const py = Math.min(100, Math.max(0, ((clientY - box.top) / box.height) * 100));
-    return { px, py };
-  }
-
-  function startDrag(corner) {
-    return (e) => {
-      e.preventDefault();
-      e.target.setPointerCapture?.(e.pointerId);
-      dragRef.current = corner;
-    };
-  }
-  function onMove(e) {
-    if (!dragRef.current) return;
-    const { px, py } = pointerToPercent(e.clientX, e.clientY);
-    setRect((prev) => (dragRef.current === 'tl'
-      ? { ...prev, x0: Math.min(px, prev.x1 - 5), y0: Math.min(py, prev.y1 - 5) }
-      : { ...prev, x1: Math.max(px, prev.x0 + 5), y1: Math.max(py, prev.y0 + 5) }));
-  }
-  function endDrag() { dragRef.current = null; }
-
-  function confirm() {
-    const img = new Image();
-    img.onload = () => {
-      const sx = (rect.x0 / 100) * img.naturalWidth;
-      const sy = (rect.y0 / 100) * img.naturalHeight;
-      const sw = ((rect.x1 - rect.x0) / 100) * img.naturalWidth;
-      const sh = ((rect.y1 - rect.y0) / 100) * img.naturalHeight;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(sw));
-      canvas.height = Math.max(1, Math.round(sh));
-      canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      onConfirm(canvas);
-    };
-    img.src = imgUrl;
-  }
-
-  const handleStyle = (x, y) => ({
-    position: 'absolute', left: `${x}%`, top: `${y}%`, transform: 'translate(-50%,-50%)',
-    width: 26, height: 26, borderRadius: 999, background: C.accent, border: `2px solid #1a1207`,
-    touchAction: 'none', cursor: 'grab', zIndex: 2,
-  });
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 60, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '14px 16px 8px', color: C.text }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 2 }}>Recorte a área dos números</div>
-        <div style={{ fontSize: 11.5, color: C.textFaint }}>{title} · arraste os dois cantos pra fora do menu e do reflexo</div>
-      </div>
-
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', padding: '0 12px', minHeight: 0 }}>
-        <div
-          ref={containerRef}
-          onPointerMove={onMove}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          style={{ position: 'relative', width: '100%', lineHeight: 0 }}
-        >
-          {imgUrl && (
-            <img
-              src={imgUrl}
-              alt=""
-              onLoad={(e) => setNatural({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
-              style={{ width: '100%', height: 'auto', display: 'block', userSelect: 'none' }}
-              draggable={false}
-            />
-          )}
-          {/* sombra fora do retângulo escolhido */}
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', clipPath: `polygon(0 0,100% 0,100% 100%,0 100%,0 ${rect.y0}%,${rect.x0}% ${rect.y0}%,${rect.x0}% ${rect.y1}%,${rect.x1}% ${rect.y1}%,${rect.x1}% ${rect.y0}%,0 ${rect.y0}%)` }} />
-          <div style={{
-            position: 'absolute', left: `${rect.x0}%`, top: `${rect.y0}%`, width: `${rect.x1 - rect.x0}%`, height: `${rect.y1 - rect.y0}%`,
-            border: `2px solid ${C.accent}`, boxSizing: 'border-box', pointerEvents: 'none',
-          }} />
-          <div style={handleStyle(rect.x0, rect.y0)} onPointerDown={startDrag('tl')} />
-          <div style={handleStyle(rect.x1, rect.y1)} onPointerDown={startDrag('br')} />
-        </div>
-      </div>
-
-      <div className="flex gap-2" style={{ padding: 16 }}>
-        <button onClick={confirm} className="flex items-center gap-1.5 justify-center" style={{ flex: 1, background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '11px 0', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
-          <CropIcon size={15} /> Confirmar recorte
-        </button>
-        <button onClick={onCancel} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '11px 16px', fontSize: 14, cursor: 'pointer' }}>
-          Cancelar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function dotStatusForConfidence(c) {
-  if (c === 'high') return 'ok';
-  if (c === 'low') return 'warning';
-  return 'routine'; // "missing" = não apareceu nessa foto, não é um erro
-}
-
-function StatusDot({ status }) {
-  return <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: 999, background: STATUS_COLOR[status], flexShrink: 0 }} />;
-}
-
-function DeleteConfirmBar({ label, onCancel, onConfirm }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: C.critSoft, borderTop: `1px solid ${C.border}` }}>
-      <span style={{ fontSize: 12.5, color: C.text, flex: 1 }}>{label}</span>
-      <button onClick={onCancel} style={{ background: 'transparent', border: `1px solid ${C.border}`, color: C.textDim, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Cancelar</button>
-      <button onClick={onConfirm} style={{ background: C.crit, border: 'none', color: '#fff', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Excluir</button>
-    </div>
-  );
-}
-
-/* Cabeçalho reutilizado por Célula / Máquina / Operação: chevron, nome
-   (com edição inline), contador de filhos e botões de ação. */
-function NodeHeader({ icon, expanded, onToggle, name, renaming, nameDraft, setNameDraft, onRenameCommit, onRenameStart, onRenameCancel, onDeleteStart, subtitle, extraRenaming }) {
-  const { unlocked } = React.useContext(EditLockContext);
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 12px', cursor: 'pointer' }} onClick={() => !renaming && onToggle()}>
-      {expanded ? <ChevronDown size={16} color={C.textDim} /> : <ChevronRight size={16} color={C.textDim} />}
-      {icon}
-      {renaming ? (
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }} onClick={(e) => e.stopPropagation()}>
-          <input
-            autoFocus
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onRenameCommit(); }}
-            style={{ background: C.surfaceRaised, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '5px 8px', color: C.text, fontSize: 14 }}
-          />
-          {extraRenaming}
-        </div>
-      ) : (
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 600, color: C.text }}>{name}</div>
-          {subtitle && <div style={{ fontSize: 12, color: C.textFaint }}>{subtitle}</div>}
-        </div>
-      )}
-      {!renaming && unlocked && (
-        <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
-          <IconBtn title="Renomear" onClick={onRenameStart}><Pencil size={14} /></IconBtn>
-          <IconBtn title="Excluir" danger onClick={onDeleteStart}><Trash2 size={14} /></IconBtn>
-        </div>
-      )}
-      {renaming && (
-        <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
-          <IconBtn onClick={onRenameCommit}><Check size={15} color={C.ok} /></IconBtn>
-          <IconBtn onClick={onRenameCancel}><X size={15} /></IconBtn>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* Linha com rótulo + botão de câmera + botão de galeria, usada nos dois
-   gatilhos de foto (vida útil / vida atual) da máquina. */
-function PhotoRow({ label, onFile, busy, busyLabel }) {
-  const camRef = useRef(null);
-  const galRef = useRef(null);
-  function pick(ref) {
-    return (e) => {
-      const f = e.target.files?.[0];
-      e.target.value = '';
-      if (f) onFile(f);
-    };
-  }
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0' }}>
-      <span style={{ flex: 1, fontSize: 12.5, color: C.text, fontWeight: 600 }}>{label}</span>
-      {busy ? (
-        <span style={{ fontSize: 12, color: C.textFaint, display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Loader2 size={13} className="animate-spin" /> {busyLabel || 'Lendo...'}
-        </span>
-      ) : (
-        <>
-          <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pick(camRef)} />
-          <input ref={galRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick(galRef)} />
-          <IconBtn title="Tirar foto" onClick={() => camRef.current?.click()}><Camera size={16} color={C.accent} /></IconBtn>
-          <IconBtn title="Escolher da galeria" onClick={() => galRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Tool row (with inline edit)                                            */
-/* ---------------------------------------------------------------------- */
-
-function ToolRow({ tool, onUpdate, onDelete, blockPreset }) {
-  const { unlocked } = React.useContext(EditLockContext);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(tool);
-  const [confirmZero, setConfirmZero] = useState(false);
-
-  const remaining = computeRemaining(tool, blockPreset);
-  const status = statusFor(remaining);
-  const pct = tool.isRoutine ? 100
-    : (parseFloat(tool.vidaUtil) > 0
-      ? Math.max(0, Math.min(100, 100 - (parseFloat(tool.vidaAtual) / parseFloat(tool.vidaUtil)) * 100))
-      : 0);
-  const calibrated = isCalibrated(tool, blockPreset);
-
-  function startEdit() {
-    setDraft({ ...tool, desgastePeca: String(getToolDesgaste(tool, blockPreset)) });
-    setEditing(true);
-  }
-
-  function save() {
-    const prevMap = (tool.desgastePeca && typeof tool.desgastePeca === 'object') ? tool.desgastePeca : {};
-    onUpdate({
-      ...draft,
-      vidaUtil: parseFloat(draft.vidaUtil) || 0,
-      vidaAtual: parseFloat(draft.vidaAtual) || 0,
-      desgastePeca: { ...prevMap, [blockPreset]: parseFloat(draft.desgastePeca) || desgasteForPreset(blockPreset) },
-    });
-    setEditing(false);
-  }
-
-  if (editing) {
-    return (
-      <div style={{ padding: '10px 12px', background: C.surfaceRaised, borderRadius: 8, marginBottom: 6, border: `1px solid ${C.borderLight}` }}>
-        <div className="flex gap-2 mb-2">
-          <Field label="Slot">
-            <SlotSelect value={draft.slot} onChange={(v) => setDraft({ ...draft, slot: v })} />
-          </Field>
-          <Field label="Cód. ferramenta (BMAN)">
-            <TextInput value={draft.bman} onChange={(e) => setDraft({ ...draft, bman: e.target.value })} placeholder="BMAN-0806" />
-          </Field>
-        </div>
-        <label className="flex items-center gap-2 mb-2" style={{ fontSize: 12.5, color: C.textDim }}>
-          <input type="checkbox" checked={!!draft.isRoutine} onChange={(e) => setDraft({ ...draft, isRoutine: e.target.checked })} />
-          Ferramenta de rotina (sem vida útil, ex: limpeza)
-        </label>
-        <div className="flex gap-2 mb-2">
-          {!draft.isRoutine && (
-            <Field label="Vida útil">
-              <TextInput inputMode="decimal" value={draft.vidaUtil} onChange={(e) => setDraft({ ...draft, vidaUtil: e.target.value })} placeholder="480" />
-            </Field>
-          )}
-          <Field label={`Desgaste / peça (bloco ${blockPreset})`}>
-            <TextInput inputMode="decimal" value={draft.desgastePeca} onChange={(e) => setDraft({ ...draft, desgastePeca: e.target.value })} placeholder="1.5" />
-          </Field>
-        </div>
-        <div style={{ fontSize: 10.5, color: calibrated ? C.textFaint : C.warn, marginTop: -6, marginBottom: 8 }}>
-          {calibrated ? `calibrado pro bloco ${blockPreset}` : `ainda é um chute padrão — não foi calibrado nesse bloco`}
-        </div>
-        <Field label={draft.isRoutine ? 'Contador atual' : 'Vida atual'}>
-          <TextInput inputMode="decimal" value={draft.vidaAtual} onChange={(e) => setDraft({ ...draft, vidaAtual: e.target.value })} placeholder="0" />
-        </Field>
-        <div className="flex gap-2 mt-3">
-          <button onClick={save} className="flex items-center gap-1 justify-center" style={{ flex: 1, background: C.accent, color: '#1a1207', border: 'none', borderRadius: 6, padding: '8px 0', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            <Check size={14} /> Salvar
-          </button>
-          <button onClick={() => { setDraft(tool); setEditing(false); }} className="flex items-center gap-1 justify-center" style={{ flex: 1, background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 0', fontSize: 13, cursor: 'pointer' }}>
-            Cancelar
-          </button>
-          <IconBtn danger onClick={onDelete} title="Excluir ferramenta"><Trash2 size={15} /></IconBtn>
-        </div>
-      </div>
-    );
-  }
-
-  if (confirmZero) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, background: C.accentSoft }}>
-        <span style={{ fontSize: 12.5, color: C.text, flex: 1 }}>
-          Zerar {tool.isRoutine ? 'o contador' : 'a vida atual'} de <span style={{ fontFamily: MONO }}>{tool.slot}</span>?
-        </span>
-        <IconBtn onClick={() => setConfirmZero(false)}><X size={15} /></IconBtn>
-        <IconBtn onClick={() => { onUpdate({ vidaAtual: 0 }); setConfirmZero(false); }}><Check size={16} color={C.ok} /></IconBtn>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      onClick={() => { if (unlocked) startEdit(); }}
-      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderBottom: `1px solid ${C.border}`, cursor: unlocked ? 'pointer' : 'default' }}
-    >
-      <StatusDot status={status} />
-      <div style={{ minWidth: 46 }}>
-        <div style={{ fontFamily: MONO, fontSize: 14, color: C.text }}>{tool.slot || '?'}</div>
-        <div style={{ fontFamily: MONO, fontSize: 11.5, color: C.textFaint }}>{tool.bman || '—'}</div>
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <GaugeBar pct={pct} color={STATUS_COLOR[status]} />
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-          <span style={{ fontSize: 11.5, color: C.textFaint, fontFamily: MONO }}>
-            {fmtNum(tool.vidaAtual)}{!tool.isRoutine && ` / ${fmtNum(tool.vidaUtil)}`}
-            {!tool.isRoutine && !calibrated && <span style={{ color: C.warn }}> · não calibrado</span>}
-          </span>
-        </div>
-      </div>
-      <div style={{ textAlign: 'right', minWidth: 44 }}>
-        {tool.isRoutine ? (
-          <span style={{ fontSize: 11.5, color: C.textFaint }}>rotina</span>
-        ) : (
-          <>
-            <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: STATUS_COLOR[status] }}>
-              {remaining === null ? '—' : remaining}
-            </div>
-            <div style={{ fontSize: 10.5, color: C.textFaint }}>peças</div>
-          </>
-        )}
-      </div>
-      <IconBtn title="Zerar" onClick={(e) => { e.stopPropagation(); setConfirmZero(true); }}>
-        <RotateCcw size={15} color={C.textFaint} />
-      </IconBtn>
-    </div>
-  );
-}
-
-function LimitePhotoButton({ readings, onReady }) {
-  const [status, setStatus] = useState('idle'); // idle | loading | ready | error
-  const [count, setCount] = useState(0);
-  const [error, setError] = useState('');
-  const inputRef = useRef(null);
-
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setStatus('loading');
-    setError('');
-    try {
-      const list = await readPanelPhoto(file);
-      const map = {};
-      list.forEach((r) => { map[r.num] = r; });
-      setCount(list.length);
-      setStatus('ready');
-      onReady(map);
-    } catch (err) {
-      setStatus('error');
-      setError(err.message);
-    }
-  }
-
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
-      <button
-        onClick={() => inputRef.current?.click()}
-        disabled={status === 'loading'}
-        className="flex items-center gap-1.5 justify-center w-full"
-        style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: status === 'loading' ? 'default' : 'pointer' }}
-      >
-        {status === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-        {status === 'loading' ? 'Lendo tela de vida útil...' : (readings ? 'Trocar foto da tela de vida útil' : 'Ler vida útil de uma foto')}
-      </button>
-      {status === 'ready' && (
-        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 5 }}>
-          {count} valor{count !== 1 ? 'es' : ''} lido{count !== 1 ? 's' : ''} da tela #800-849 — ao digitar o slot (ex: T03), a vida útil preenche sozinha.
-        </div>
-      )}
-      {status === 'error' && (
-        <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui ler essa foto{error ? ` (${error})` : ''}. Tente outra.</div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add-tool inline form                                                   */
-/* ---------------------------------------------------------------------- */
-
-function NewToolForm({ onAdd, compact, limiteReadings, blockPreset, hideProgramPhoto }) {
-  const presetDesgaste = String(desgasteForPreset(blockPreset));
-  const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: presetDesgaste, isRoutine: false };
-  const [t, setT] = useState(blank);
-  const [vuFromPhoto, setVuFromPhoto] = useState(false);
-  const [programStatus, setProgramStatus] = useState('idle'); // idle | loading | error
-  const [programError, setProgramError] = useState('');
-  const [programCandidates, setProgramCandidates] = useState([]);
-  const programCamRef = useRef(null);
-  const programGalRef = useRef(null);
-
-  async function handleProgramPhoto(file) {
-    setProgramStatus('loading');
-    setProgramError('');
-    try {
-      const found = await readProgramPhoto(file);
-      if (found.length === 0) {
-        setProgramStatus('error');
-        setProgramError('nenhuma ferramenta reconhecida nessa foto');
-        return;
-      }
-      setProgramCandidates(found);
-      setProgramStatus('idle');
-    } catch (err) {
-      setProgramStatus('error');
-      setProgramError(err.message);
-    }
-  }
-  function pickProgramFile(ref) {
-    return (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleProgramPhoto(f); };
-  }
-  function useCandidate(found) {
-    setT((prev) => ({ ...prev, slot: found.slot, bman: found.bman }));
-    setProgramCandidates((prev) => prev.filter((c) => c !== found));
-  }
-
-  // Se uma foto da tela de vida útil já foi lida (pelo botão acima, no
-  // pai), assim que o slot bate com um #80N conhecido, preenche sozinho.
-  // Só sobrescreve enquanto o valor ainda não foi editado à mão.
-  React.useEffect(() => {
-    if (!limiteReadings || t.isRoutine) return;
-    const num = slotToLimiteNum(t.slot);
-    if (num === null) return;
-    const reading = limiteReadings[num];
-    if (!reading) return;
-    if (t.vidaUtil === '' || vuFromPhoto) {
-      setT((prev) => (prev.vidaUtil === String(reading.value) ? prev : { ...prev, vidaUtil: String(reading.value) }));
-      setVuFromPhoto(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [t.slot, t.isRoutine, limiteReadings]);
-
-  function submit() {
-    if (!t.slot.trim()) return;
-    onAdd({
-      id: genId('tool'),
-      slot: t.slot.trim(),
-      bman: t.bman.trim(),
-      isRoutine: t.isRoutine,
-      vidaUtil: t.isRoutine ? 0 : (parseFloat(t.vidaUtil) || 0),
-      vidaAtual: parseFloat(t.vidaAtual) || 0,
-      desgastePeca: { [blockPreset]: parseFloat(t.desgastePeca) || desgasteForPreset(blockPreset) },
-      lastUpdated: null,
-    });
-    setT(blank);
-    setVuFromPhoto(false);
-  }
-
-  return (
-    <div style={{ padding: compact ? '10px' : '12px', background: C.surfaceRaised, borderRadius: 8, border: `1px dashed ${C.borderLight}` }}>
-      {!hideProgramPhoto && (
-        <div style={{ marginBottom: 10 }}>
-          <input ref={programCamRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pickProgramFile(programCamRef)} />
-          <input ref={programGalRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pickProgramFile(programGalRef)} />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              onClick={() => programCamRef.current?.click()}
-              disabled={programStatus === 'loading'}
-              className="flex items-center gap-1.5 justify-center"
-              style={{ flex: 1, background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: programStatus === 'loading' ? 'default' : 'pointer' }}
-            >
-              {programStatus === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-              {programStatus === 'loading' ? 'Lendo programa...' : 'Ler slot e código do programa'}
-            </button>
-            <IconBtn title="Da galeria" onClick={() => programGalRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
-          </div>
-          {programStatus === 'error' && (
-            <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui reconhecer nada nessa foto{programError ? ` (${programError})` : ''}. Cadastre manualmente ou tente outra.</div>
-          )}
-          {programCandidates.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>Toque na ferramenta lida pra preencher slot + código (confira antes de salvar):</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {programCandidates.map((c) => (
-                  <button
-                    key={c.slot}
-                    onClick={() => useCandidate(c)}
-                    style={{ background: C.surfaceDeep, color: C.text, border: `1px solid ${C.border}`, borderRadius: 999, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}
-                  >
-                    {c.slot} · {c.bman}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      <div className="flex gap-2 mb-2">
-        <Field label="Slot">
-          <SlotSelect value={t.slot} onChange={(v) => setT({ ...t, slot: v })} />
-        </Field>
-        <Field label="Cód. ferramenta (BMAN)">
-          <TextInput value={t.bman} onChange={(e) => setT({ ...t, bman: e.target.value })} placeholder="BMAN-0806" />
-        </Field>
-      </div>
-      <label className="flex items-center gap-2 mb-2" style={{ fontSize: 12.5, color: C.textDim }}>
-        <input type="checkbox" checked={t.isRoutine} onChange={(e) => setT({ ...t, isRoutine: e.target.checked })} />
-        Ferramenta de rotina (sem vida útil, ex: limpeza)
-      </label>
-      <div className="flex gap-2 mb-2">
-        {!t.isRoutine && (
-          <Field label="Vida útil">
-            <TextInput
-              inputMode="decimal"
-              value={t.vidaUtil}
-              onChange={(e) => { setT({ ...t, vidaUtil: e.target.value }); setVuFromPhoto(false); }}
-              placeholder="480"
-              style={{ borderColor: vuFromPhoto ? C.ok : undefined }}
-            />
-            {vuFromPhoto && <span style={{ fontSize: 10, color: C.ok }}>✓ lido da foto — confira</span>}
-          </Field>
-        )}
-        <Field label={`Desgaste / peça (bloco ${blockPreset})`}>
-          <TextInput inputMode="decimal" value={t.desgastePeca} onChange={(e) => setT({ ...t, desgastePeca: e.target.value })} placeholder="1.5" />
-        </Field>
-      </div>
-      <Field label={t.isRoutine ? 'Contador atual' : 'Vida atual'}>
-        <TextInput inputMode="decimal" value={t.vidaAtual} onChange={(e) => setT({ ...t, vidaAtual: e.target.value })} placeholder="0" />
-      </Field>
-      <button
-        onClick={submit}
-        disabled={!t.slot.trim()}
-        className="flex items-center gap-1 justify-center mt-3 w-full"
-        style={{
-          background: t.slot.trim() ? C.accent : C.border, color: t.slot.trim() ? '#1a1207' : C.textFaint,
-          border: 'none', borderRadius: 6, padding: '8px 0', fontSize: 13, fontWeight: 600,
-          cursor: t.slot.trim() ? 'pointer' : 'default',
-        }}
-      >
-        <Plus size={14} /> Adicionar ferramenta
-      </button>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Operation card (nível 3 — dentro de uma máquina)                       */
-/* ---------------------------------------------------------------------- */
-
-function OperationCard({ op, expanded, onToggle, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp, blockPreset }) {
-  const { unlocked } = React.useContext(EditLockContext);
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(op.name);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [showAddTool, setShowAddTool] = useState(false);
-  const [limiteReadings, setLimiteReadings] = useState(null);
-
-  const active = op.tools.filter((t) => !t.isRoutine);
-  const worst = active.map((t) => computeRemaining(t, blockPreset)).filter((r) => r !== null);
-  const minRemaining = worst.length ? Math.min(...worst) : null;
-  const headStatus = statusFor(minRemaining);
-
-  const palletToggle = (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>Esta operação roda em qual pallet?</div>
-      <div className="flex gap-2">
-        {[1, 2].map((p) => (
-          <button
-            key={p}
-            onClick={() => onRenameOp(op.name, p)}
-            style={{
-              flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-              background: op.pallet === p ? C.accentSoft : 'transparent',
-              color: op.pallet === p ? C.accent : C.textDim,
-              border: `1px solid ${op.pallet === p ? C.accent : C.border}`,
-            }}
-          >
-            Pallet {p}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{ background: C.surfaceDeep, borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 8, overflow: 'hidden' }}>
-      <NodeHeader
-        icon={<Wrench size={14} color={C.textFaint} />}
-        expanded={expanded}
-        onToggle={onToggle}
-        name={op.name}
-        subtitle={
-          <span>
-            {op.pallet && <>Pallet {op.pallet} · </>}
-            {`${op.tools.length} ferramenta${op.tools.length !== 1 ? 's' : ''}`}
-            {minRemaining !== null && <> · <span style={{ color: STATUS_COLOR[headStatus] }}>{minRemaining} pç até a próxima troca</span></>}
-          </span>
-        }
-        renaming={renaming}
-        nameDraft={nameDraft}
-        setNameDraft={setNameDraft}
-        onRenameStart={() => setRenaming(true)}
-        onRenameCommit={() => { onRenameOp(nameDraft, op.pallet); setRenaming(false); }}
-        onRenameCancel={() => { setNameDraft(op.name); setRenaming(false); }}
-        onDeleteStart={() => setConfirmDelete(true)}
-      />
-
-      {confirmDelete && (
-        <DeleteConfirmBar label={`Excluir "${op.name}" e todas as ferramentas dela?`} onCancel={() => setConfirmDelete(false)} onConfirm={onDeleteOp} />
-      )}
-
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px' }}>
-          {unlocked && palletToggle}
-          {unlocked && (
-            <div className="flex gap-2 mb-3">
-              <button
-                onClick={() => setShowAddTool((s) => !s)}
-                className="flex items-center gap-1.5 justify-center w-full"
-                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}
-              >
-                <Plus size={14} /> Ferramenta
-              </button>
-            </div>
-          )}
-
-          {op.tools.length === 0 && !showAddTool && (
-            <div style={{ fontSize: 12.5, color: C.textFaint, padding: '10px 0', textAlign: 'center' }}>
-              Nenhuma ferramenta cadastrada ainda.
-            </div>
-          )}
-
-          <div style={{ marginBottom: showAddTool ? 10 : 0 }}>
-            {op.tools.map((t) => (
-              <ToolRow key={t.id} tool={t} onUpdate={(patch) => onUpdateTool(t.id, patch)} onDelete={() => onDeleteTool(t.id)} blockPreset={blockPreset} />
-            ))}
-          </div>
-
-          {showAddTool && (
-            <>
-              <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-              <NewToolForm compact onAdd={onAddTool} limiteReadings={limiteReadings} blockPreset={blockPreset} />
-              <button
-                onClick={() => setShowAddTool(false)}
-                className="flex items-center gap-1.5 justify-center mt-2 w-full"
-                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 0', fontSize: 12.5, cursor: 'pointer' }}
-              >
-                <Check size={13} /> Concluído, fechar
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add operation panel (nome + ferramentas de uma vez)                    */
-/* ---------------------------------------------------------------------- */
-
-function ProgramPhotoButton({ onTools }) {
-  const [status, setStatus] = useState('idle');
-  const [error, setError] = useState('');
-  const camRef = useRef(null);
-  const galRef = useRef(null);
-
-  async function handleFile(file) {
-    setStatus('loading');
-    setError('');
-    try {
-      const found = await readProgramPhoto(file);
-      if (found.length === 0) {
-        setStatus('error');
-        setError('nenhuma ferramenta reconhecida nessa foto');
-        return;
-      }
-      onTools(found);
-      setStatus('idle');
-    } catch (err) {
-      setStatus('error');
-      setError(err.message);
-    }
-  }
-  function pick(ref) {
-    return (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleFile(f); };
-  }
-
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pick(camRef)} />
-      <input ref={galRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick(galRef)} />
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button
-          onClick={() => camRef.current?.click()}
-          disabled={status === 'loading'}
-          className="flex items-center gap-1.5 justify-center"
-          style={{ flex: 1, background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: status === 'loading' ? 'default' : 'pointer' }}
-        >
-          {status === 'loading' ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-          {status === 'loading' ? 'Lendo programa...' : 'Ler ferramentas do programa'}
-        </button>
-        <IconBtn title="Da galeria" onClick={() => galRef.current?.click()}><ImageIcon size={16} color={C.accent} /></IconBtn>
-      </div>
-      {status === 'error' && <div style={{ fontSize: 11, color: C.crit, marginTop: 5 }}>Não consegui reconhecer nada nessa foto{error ? ` (${error})` : ''}. Cadastre manualmente ou tente outra.</div>}
-    </div>
-  );
-}
-
-function AddOperationPanel({ onSave, onCancel, blockPreset }) {
-  const [name, setName] = useState('');
-  const [tools, setTools] = useState([]);
-  const [limiteReadings, setLimiteReadings] = useState(null);
-
-  function addTool(tool) { setTools((prev) => [...prev, tool]); }
-  function removeTool(id) { setTools((prev) => prev.filter((t) => t.id !== id)); }
-  function addToolsFromProgram(found) {
-    setTools((prev) => {
-      const existingSlots = new Set(prev.map((t) => t.slot));
-      const additions = found
-        .filter((f) => !existingSlots.has(f.slot))
-        .map((f) => ({
-          id: genId('tool'), slot: f.slot, bman: f.bman, isRoutine: false,
-          vidaUtil: 0, vidaAtual: 0, desgastePeca: { [blockPreset]: desgasteForPreset(blockPreset) }, lastUpdated: null,
-        }));
-      return [...prev, ...additions];
-    });
-  }
-  function save() {
-    if (!name.trim()) return;
-    onSave({ id: genId('op'), name: name.trim(), pallet: null, tools });
-  }
-
-  return (
-    <div style={{ background: C.surfaceRaised, borderRadius: 8, border: `1px solid ${C.accent}`, padding: 12, marginBottom: 10 }}>
-      <div style={{ fontSize: 13.5, fontWeight: 600, color: C.text, marginBottom: 8 }}>Nova operação</div>
-      <Field label="Nome da operação">
-        <TextInput autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="OP 800" style={{ fontFamily: SANS }} />
-      </Field>
-
-      <div style={{ marginTop: 10 }}>
-        <ProgramPhotoButton onTools={addToolsFromProgram} />
-        <LimitePhotoButton readings={limiteReadings} onReady={setLimiteReadings} />
-        <NewToolForm onAdd={addTool} limiteReadings={limiteReadings} blockPreset={blockPreset} hideProgramPhoto />
-      </div>
-
-      {tools.length > 0 && (
-        <div style={{ marginTop: 10, marginBottom: 4 }}>
-          {tools.map((t) => (
-            <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
-              <span style={{ fontFamily: MONO, fontSize: 13, color: C.text, minWidth: 40 }}>{t.slot}</span>
-              <span style={{ fontFamily: MONO, fontSize: 12, color: C.textFaint, flex: 1 }}>{t.bman || '—'}</span>
-              <span style={{ fontSize: 12, color: C.textDim }}>{t.isRoutine ? 'rotina' : `vida ${fmtNum(t.vidaUtil)}`}</span>
-              <IconBtn danger onClick={() => removeTool(t.id)}><Trash2 size={13} /></IconBtn>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex gap-2 mt-3">
-        <button
-          onClick={save}
-          disabled={!name.trim()}
-          className="flex items-center gap-1.5 justify-center"
-          style={{ flex: 1, background: name.trim() ? C.accent : C.border, color: name.trim() ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '9px 0', fontSize: 13, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'default' }}
-        >
-          <Check size={14} /> Salvar operação
-        </button>
-        <button onClick={onCancel} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '9px 14px', fontSize: 13, cursor: 'pointer' }}>
-          Cancelar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* Contador de peças por pallet, na Máquina.
-   O app guarda a ÚLTIMA contagem registrada e calcula a diferença
-   sozinho — assim você só digita o número que está no computador
-   naquele momento, sem precisar lembrar de quanto era antes. */
-function PalletCounterRow({ pallet, lastAdd, onAdd, onUndo }) {
-  const [draft, setDraft] = useState('');
-
-  const n = parseInt(draft, 10);
-  const valid = !isNaN(n) && n > 0;
-
-  function add() {
-    if (!valid) return;
-    onAdd(n);
-    setDraft('');
-  }
-
-  return (
-    <div style={{ padding: '9px 0', borderBottom: `1px solid ${C.border}` }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 13, color: C.text, minWidth: 62, fontWeight: 600 }}>Pallet {pallet}</span>
-        <TextInput
-          inputMode="numeric"
-          value={draft}
-          placeholder="peças"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
-          style={{ flex: 1, textAlign: 'center', padding: '6px 2px' }}
-        />
-        <button
-          onClick={add}
-          disabled={!valid}
-          style={{
-            fontSize: 12, borderRadius: 6, padding: '6px 12px',
-            background: valid ? C.accentSoft : 'transparent',
-            color: valid ? C.accent : C.textFaint,
-            border: `1px solid ${valid ? C.accent : C.border}`,
-            cursor: valid ? 'pointer' : 'default',
-          }}
-        >
-          Adicionar
-        </button>
-      </div>
-      {lastAdd ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, paddingLeft: 2 }}>
-          <span style={{ fontSize: 11.5, color: C.textFaint, flex: 1 }}>
-            +{lastAdd.amount} {lastAdd.amount === 1 ? 'peça adicionada' : 'peças adicionadas'} por último
-          </span>
-          <button
-            onClick={onUndo}
-            style={{ fontSize: 11.5, background: 'transparent', color: C.textFaint, border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
-          >
-            desfazer
-          </button>
-        </div>
-      ) : (
-        <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4, paddingLeft: 2 }}>
-          digite a produção de um turno e toque em Adicionar — repita pra cada turno que quiser lançar
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* Calibração de desgaste: você marca "início" (guarda a vida atual de
-   cada ferramenta), roda peças normalmente, e ao finalizar informa
-   quantas peças rodaram em cada pallet — o app calcula (fim−início)÷peças
-   por ferramenta e propõe salvar como o desgaste calibrado do bloco. */
-function CalibrationModal({ machine, onClose, onSave }) {
-  const cal = machine.calibration;
-  const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
-  const [pieces, setPieces] = useState(() => Object.fromEntries(pallets.map((p) => [p, ''])));
-
-  const rows = [];
-  machine.operations.forEach((op) => {
-    if (op.pallet !== 1 && op.pallet !== 2) return;
-    op.tools.forEach((t) => {
-      if (t.isRoutine) return;
-      if (!(t.id in cal.snapshot) || !(t.id in cal.finish)) return; // sem leitura fresca dos dois lados, sem como calibrar
-      const n = parseInt(pieces[op.pallet], 10);
-      const valid = !isNaN(n) && n > 0;
-      const startVA = cal.snapshot[t.id];
-      const finishVA = cal.finish[t.id];
-      const computed = valid ? (finishVA - startVA) / n : null;
-      rows.push({ toolId: t.id, slot: t.slot, startVA, finishVA, computed });
-    });
-  });
-  const readyRows = rows.filter((r) => r.computed !== null && r.computed > 0);
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 55, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, width: '100%', maxWidth: 480, maxHeight: '86vh', overflowY: 'auto', border: `1px solid ${C.borderLight}`, borderBottom: 'none', padding: 16 }}>
-        <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 14px' }} />
-        <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Resultado da calibração</div>
-        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>
-          bloco {cal.preset} · início {new Date(cal.startedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-        </div>
-
-        <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 8 }}>Quantas peças rodaram em cada pallet entre a leitura de início e a de fim?</div>
-        {pallets.map((p) => (
-          <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 13, color: C.text, minWidth: 62 }}>Pallet {p}</span>
-            <TextInput
-              inputMode="numeric"
-              value={pieces[p]}
-              onChange={(e) => setPieces((prev) => ({ ...prev, [p]: e.target.value }))}
-              placeholder="0"
-              style={{ flex: 1 }}
-            />
-          </div>
-        ))}
-
-        <div style={{ fontSize: 11, color: C.textFaint, margin: '14px 0 8px' }}>Valores calculados — confira antes de salvar</div>
-        {rows.length === 0 && (
-          <div style={{ fontSize: 12, color: C.textFaint, padding: '8px 0' }}>
-            Nenhuma ferramenta pra calibrar (confira se as operações têm pallet definido, e se as duas leituras trouxeram vida atual pra essas ferramentas).
-          </div>
-        )}
-        {rows.map((r) => (
-          <div key={r.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
-            <span style={{ fontFamily: MONO, fontSize: 13, color: C.text, minWidth: 44 }}>{r.slot}</span>
-            <span style={{ fontSize: 10.5, color: C.textFaint, flex: 1 }}>{fmtNum(r.startVA)} → {fmtNum(r.finishVA)}</span>
-            <span style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: r.computed === null ? C.textFaint : (r.computed > 0 ? C.ok : C.crit) }}>
-              {r.computed === null ? '—' : r.computed.toFixed(2)}
-            </span>
-          </div>
-        ))}
-        <div style={{ fontSize: 10.5, color: C.textFaint, marginTop: 8 }}>
-          Um valor negativo ou zero geralmente indica que a ferramenta foi trocada/zerada no meio da calibração — ela não entra ao salvar.
-        </div>
-
-        <div className="flex gap-2 mt-4">
-          <button
-            onClick={() => onSave(readyRows)}
-            disabled={readyRows.length === 0}
-            style={{ flex: 1, background: readyRows.length ? C.accent : C.border, color: readyRows.length ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: readyRows.length ? 'pointer' : 'default' }}
-          >
-            Salvar calibração ({readyRows.length})
-          </button>
-          <button onClick={onClose} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '10px 14px', fontSize: 13.5, cursor: 'pointer' }}>
-            Fechar
-
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Machine card (nível 2 — dentro de uma célula)                          */
-/* ---------------------------------------------------------------------- */
-
-function MachineCard({
-  machine, expanded, onToggle, onRename, onDelete,
-  onAddOperation, onToggleOp, expandedOpId,
-  onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
-  onPhotoFile, photoBusy, onManualEntry,
-  onAddProduction, onUndoProduction, blockPreset,
-  onStartCalibration, onSetCalibrationPhase, onCancelCalibration, onFinishCalibration,
-}) {
-  const { unlocked } = React.useContext(EditLockContext);
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(machine.name);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [showAddOp, setShowAddOp] = useState(false);
-  const [showPanelRead, setShowPanelRead] = useState(false);
-  const [showCounter, setShowCounter] = useState(false);
-  const [showCalibrationModal, setShowCalibrationModal] = useState(false);
-
-  const calPhase = machine.calibration?.phase;
-  React.useEffect(() => {
-    if (calPhase === 'awaiting_start' || calPhase === 'awaiting_finish') setShowPanelRead(true);
-    if (calPhase === 'ready') setShowCalibrationModal(true);
-  }, [calPhase]);
-
-  const pallets = Array.from(new Set(machine.operations.map((o) => o.pallet).filter((p) => p === 1 || p === 2))).sort();
-  const hasOps = machine.operations.length > 0;
-
-  return (
-    <div style={{ background: C.surface, borderRadius: 9, border: `1px solid ${C.border}`, marginBottom: 8, overflow: 'hidden' }}>
-      <NodeHeader
-        icon={<Cpu size={14} color={C.textDim} />}
-        expanded={expanded}
-        onToggle={onToggle}
-        name={machine.name}
-        subtitle={`${machine.operations.length} ${machine.operations.length === 1 ? 'operação' : 'operações'}`}
-        renaming={renaming}
-        nameDraft={nameDraft}
-        setNameDraft={setNameDraft}
-        onRenameStart={() => setRenaming(true)}
-        onRenameCommit={() => { onRename(nameDraft); setRenaming(false); }}
-        onRenameCancel={() => { setNameDraft(machine.name); setRenaming(false); }}
-        onDeleteStart={() => setConfirmDelete(true)}
-      />
-
-      {confirmDelete && (
-        <DeleteConfirmBar label={`Excluir a máquina "${machine.name}" e tudo dentro dela?`} onCancel={() => setConfirmDelete(false)} onConfirm={onDelete} />
-      )}
-
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', background: C.bg }}>
-          {/* Uso diário em primeiro lugar: contador de peças usinadas */}
-          {pallets.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              <button
-                onClick={() => setShowCounter((v) => !v)}
-                className="flex items-center gap-1.5 justify-center w-full"
-                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
-              >
-                {showCounter ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Contador de peças
-              </button>
-              {showCounter && (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '2px 10px 6px', marginTop: 6 }}>
-                  <div style={{ fontSize: 11.5, color: C.textFaint, textAlign: 'center', padding: '8px 0 6px' }}>
-                    lance a produção de cada turno assim que ela aparecer no computador
-                  </div>
-                  {pallets.map((p) => (
-                    <PalletCounterRow
-                      key={p}
-                      pallet={p}
-                      lastAdd={(machine.lastAdd || {})[p] || null}
-                      onAdd={(pieces) => onAddProduction(machine.id, p, pieces)}
-                      onUndo={() => onUndoProduction(machine.id, p)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Leitura do painel: usada bem menos que o contador, então fica
-              recolhida por padrão pra não poluir a tela do dia a dia. */}
-          {hasOps && (
-            <div style={{ marginBottom: 8 }}>
-              <button
-                onClick={() => setShowPanelRead((v) => !v)}
-                className="flex items-center gap-1.5 justify-center w-full"
-                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
-              >
-                {showPanelRead ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Alterar vida ( T )
-              </button>
-              {showPanelRead && (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 10px', marginTop: 6 }}>
-                  <PhotoRow label="Vida atual (foto #900-949)" onFile={(f) => onPhotoFile(machine.id, 'atual', f)} busy={photoBusy === 'atual'} busyLabel="Lendo..." />
-                  <PhotoRow label="Vida útil (foto #800-849)" onFile={(f) => onPhotoFile(machine.id, 'util', f)} busy={photoBusy === 'util'} busyLabel="Lendo..." />
-                  <button
-                    onClick={() => onManualEntry(machine.id)}
-                    className="flex items-center gap-1.5 justify-center w-full"
-                    style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer', margin: '4px 0 8px' }}
-                  >
-                    <Pencil size={13} /> Digitar manualmente
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Calibração de desgaste — usa sempre uma leitura FRESCA do
-              painel no início e no fim (nunca o valor acumulado pelo
-              contador de peças), porque senão a conta acaba só confirmando
-              de volta o próprio chute que estava tentando corrigir. */}
-          {unlocked && hasOps && (
-            <div style={{ marginBottom: 8 }}>
-              {!machine.calibration && (
-                <button
-                  onClick={() => onStartCalibration(machine.id)}
-                  className="flex items-center gap-1.5 justify-center w-full"
-                  style={{ background: 'transparent', color: C.textDim, border: `1px dashed ${C.borderLight}`, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
-                >
-                  <Wrench size={13} /> Calibrar desgaste (bloco {blockPreset})
-                </button>
-              )}
-
-              {machine.calibration?.phase === 'awaiting_start' && (
-                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
-                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
-                    Agora leia a vida atual (foto ou "Digitar manualmente" logo acima) — essa leitura vira o <strong>início</strong> da calibração do bloco {machine.calibration.preset}.
-                  </div>
-                  <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
-                    Cancelar calibração
-                  </button>
-                </div>
-              )}
-
-              {machine.calibration?.phase === 'running' && (
-                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
-                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
-                    Calibrando bloco {machine.calibration.preset} desde{' '}
-                    {new Date(machine.calibration.startedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                    . Deixe rodar as peças que quiser antes de finalizar.
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => onSetCalibrationPhase(machine.id, 'awaiting_finish')}
-                      style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '7px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
-                    >
-                      Finalizar
-                    </button>
-                    <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
-                      Cancelar
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {machine.calibration?.phase === 'awaiting_finish' && (
-                <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px' }}>
-                  <div style={{ fontSize: 12, color: C.text, marginBottom: 8 }}>
-                    Agora leia a vida atual de novo (foto ou "Digitar manualmente") — essa leitura vira o <strong>fim</strong> da calibração.
-                  </div>
-                  <button onClick={() => onCancelCalibration(machine.id)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
-                    Cancelar calibração
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {showCalibrationModal && machine.calibration?.phase === 'ready' && (
-            <CalibrationModal
-              machine={machine}
-              onClose={() => setShowCalibrationModal(false)}
-              onSave={(readyRows) => { onFinishCalibration(machine.id, readyRows); setShowCalibrationModal(false); }}
-            />
-          )}
-
-          {unlocked && !showAddOp && (
-            <button
-              onClick={() => setShowAddOp(true)}
-              className="flex items-center gap-1.5 justify-center w-full mb-2"
-              style={{ background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 7, padding: '8px 0', fontSize: 12.5, cursor: 'pointer' }}
-            >
-              <Plus size={14} /> Nova operação
-            </button>
-          )}
-          {showAddOp && <AddOperationPanel blockPreset={blockPreset} onSave={(op) => { onAddOperation(op); setShowAddOp(false); }} onCancel={() => setShowAddOp(false)} />}
-
-          {!hasOps && !showAddOp && (
-            <div style={{ fontSize: 12.5, color: C.textFaint, padding: '6px 0 2px', textAlign: 'center' }}>
-              {unlocked ? 'Nenhuma operação cadastrada nesta máquina ainda.' : 'Sem operações. Destrave o cadeado para cadastrar.'}
-            </div>
-          )}
-
-          {machine.operations.map((op) => (
-            <OperationCard
-              key={op.id}
-              op={op}
-              expanded={expandedOpId === op.id}
-              onToggle={() => onToggleOp(op.id)}
-              onUpdateTool={(toolId, patch) => onUpdateTool(op.id, toolId, patch)}
-              onDeleteTool={(toolId) => onDeleteTool(op.id, toolId)}
-              onAddTool={(tool) => onAddTool(op.id, tool)}
-              onDeleteOp={() => onDeleteOp(op.id)}
-              onRenameOp={(name, pallet) => onRenameOp(op.id, name, pallet)}
-              blockPreset={blockPreset}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add machine panel — com opção de duplicar de outra máquina              */
-/* ---------------------------------------------------------------------- */
-
-function AddMachinePanel({ onSave, onCancel, otherMachines }) {
-  const [name, setName] = useState('');
-  const [sourceId, setSourceId] = useState('');
-
-  function save() {
-    if (!name.trim()) return;
-    const source = otherMachines.find((m) => m.machine.id === sourceId);
-    const operations = source ? cloneOperationsForNewMachine(source.machine.operations) : [];
-    onSave({ id: genId('machine'), name: name.trim(), operations });
-  }
-
-  return (
-    <div style={{ background: C.surfaceRaised, borderRadius: 8, border: `1px solid ${C.accent}`, padding: 12, marginBottom: 10 }}>
-      <div style={{ fontSize: 13.5, fontWeight: 600, color: C.text, marginBottom: 8 }}>Nova máquina</div>
-      <Field label="Identificação da máquina">
-        <TextInput autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="6262" style={{ fontFamily: SANS }} />
-      </Field>
-
-      {otherMachines.length > 0 && (
-        <div style={{ marginTop: 10 }}>
-          <Field label="Copiar operações e ferramentas de">
-            <Select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
-              <option value="">Nenhuma — começar em branco</option>
-              {otherMachines.map(({ machine, cellName }) => (
-                <option key={machine.id} value={machine.id}>{cellName} · {machine.name}</option>
-              ))}
-            </Select>
-          </Field>
-          {sourceId && (
-            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11.5, color: C.textFaint, marginTop: 6 }}>
-              <Copy size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-              <span>Copia os slots, códigos BMAN, vida útil e desgaste por peça. A vida atual de cada ferramenta começa zerada, já que é um jogo de ferramentas físico separado.</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="flex gap-2 mt-3">
-        <button
-          onClick={save}
-          disabled={!name.trim()}
-          className="flex items-center gap-1.5 justify-center"
-          style={{ flex: 1, background: name.trim() ? C.accent : C.border, color: name.trim() ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '9px 0', fontSize: 13, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'default' }}
-        >
-          <Check size={14} /> Salvar máquina
-        </button>
-        <button onClick={onCancel} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '9px 14px', fontSize: 13, cursor: 'pointer' }}>
-          Cancelar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Cell card (nível 1 — topo)                                             */
-/* ---------------------------------------------------------------------- */
-
-/* Item da lista de células — cartão compacto que "entra" na célula ao
-   tocar, em vez de expandir tudo aninhado na mesma tela. */
-function CellListItem({ cell, onOpen, unlocked, onDragHandlePointerDown, dragging }) {
-  const rows = flattenToolRows([cell])
-    .map((r) => computeRemaining(r.tool, cell.blockPreset || '6cc'))
-    .filter((r) => r !== null);
-  const minRemaining = rows.length ? Math.min(...rows) : null;
-  const status = statusFor(minRemaining);
-
-  return (
-    <div
-      onClick={onOpen}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 11, padding: '14px 13px', cursor: 'pointer',
-        background: dragging ? C.surfaceRaised : C.surface, borderRadius: 10,
-        border: `1px solid ${dragging ? C.borderLight : C.border}`, marginBottom: 9,
-      }}
-    >
-      {unlocked && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={onDragHandlePointerDown}
-          title="Arrastar para reordenar"
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            width: 26, height: 34, margin: '0 -4px 0 -6px', cursor: 'grab', touchAction: 'none',
-          }}
-        >
-          <GripVertical size={16} color={C.textFaint} />
-        </div>
-      )}
-      <div style={{ width: 34, height: 34, borderRadius: 8, background: C.accentSoft, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <Layers size={16} color={C.accent} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{cell.name}</div>
-        <div style={{ fontSize: 12, color: C.textFaint }}>
-          {cell.machines.length} {cell.machines.length === 1 ? 'máquina' : 'máquinas'} · bloco {cell.blockPreset || '6cc'}
-        </div>
-      </div>
-      {minRemaining !== null && (
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: STATUS_COLOR[status] }}>{minRemaining}</div>
-          <div style={{ fontSize: 10, color: C.textFaint }}>pç</div>
-        </div>
-      )}
-      <ChevronRight size={18} color={C.textFaint} />
-    </div>
-  );
-}
-
-/* Lista de células com reordenação por arrastar — só ativa com o cadeado
-   aberto. Segura a alça (ícone de grip) de uma célula e arrasta pra cima
-   ou pra baixo; uma linha laranja mostra onde ela vai cair ao soltar. */
-function ReorderableCellList({ cells, onOpen, onReorder, unlocked }) {
-  const itemRefs = useRef({});
-  const [drag, setDrag] = useState(null); // { id, startY, y, order, rects, targetIndex }
-
-  function startDrag(cellId) {
-    return (e) => {
-      e.preventDefault();
-      const order = cells.map((c) => c.id);
-      const rects = {};
-      order.forEach((cid) => {
-        const node = itemRefs.current[cid];
-        if (node) rects[cid] = node.getBoundingClientRect();
-      });
-      setDrag({ id: cellId, startY: e.clientY, y: e.clientY, order, rects, targetIndex: order.indexOf(cellId) });
-      e.target.setPointerCapture?.(e.pointerId);
-    };
-  }
-
-  function onMove(e) {
-    if (!drag) return;
-    const y = e.clientY;
-    // targetIndex vai de 0 até drag.order.length (inclusive): esse último
-    // valor significa "depois do último item da lista".
-    let targetIndex = drag.order.length;
-    for (let i = 0; i < drag.order.length; i++) {
-      const r = drag.rects[drag.order[i]];
-      if (!r) continue;
-      if (y < r.top + r.height / 2) { targetIndex = i; break; }
-    }
-    setDrag((d) => (d ? { ...d, y, targetIndex } : d));
-  }
-
-  function endDrag() {
-    if (!drag) return;
-    const { id, order, targetIndex } = drag;
-    const withoutDragged = order.filter((cid) => cid !== id);
-    const insertAt = Math.min(targetIndex, withoutDragged.length);
-    const next = [...withoutDragged];
-    next.splice(insertAt, 0, id);
-    if (next.join() !== order.join()) {
-      onReorder(next.map((cid) => cells.find((c) => c.id === cid)).filter(Boolean));
-    }
-    setDrag(null);
-  }
-
-  const offset = drag ? drag.y - drag.startY : 0;
-
-  return (
-    <div onPointerMove={onMove} onPointerUp={endDrag} onPointerCancel={endDrag}>
-      {cells.map((cell, i) => (
-        <React.Fragment key={cell.id}>
-          {drag && drag.targetIndex === i && (
-            <div style={{ height: 3, background: C.accent, borderRadius: 2, marginBottom: 6 }} />
-          )}
-          <div
-            ref={(node) => { itemRefs.current[cell.id] = node; }}
-            style={{
-              transform: drag?.id === cell.id ? `translateY(${offset}px) scale(1.02)` : 'none',
-              boxShadow: drag?.id === cell.id ? '0 10px 24px rgba(0,0,0,0.45)' : 'none',
-              position: drag?.id === cell.id ? 'relative' : 'static',
-              zIndex: drag?.id === cell.id ? 5 : 'auto',
-            }}
-          >
-            <CellListItem
-              cell={cell}
-              onOpen={() => { if (!drag) onOpen(cell.id); }}
-              unlocked={unlocked}
-              dragging={drag?.id === cell.id}
-              onDragHandlePointerDown={startDrag(cell.id)}
-            />
-          </div>
-        </React.Fragment>
-      ))}
-      {drag && drag.targetIndex === cells.length && (
-        <div style={{ height: 3, background: C.accent, borderRadius: 2, marginBottom: 6 }} />
-      )}
-    </div>
-  );
-}
-
-/* Tela de uma célula: cabeçalho com voltar, resumo só desta célula e
-   a lista de máquinas dela. */
-function CellDetail({
-  cell, onBack, onRename, onDelete, otherMachines,
-  onAddMachine, expandedMachineId, onToggleMachine, onRenameMachine, onDeleteMachine,
-  expandedOpId, onToggleOp, onAddOperation, onUpdateTool, onDeleteTool, onAddTool, onDeleteOp, onRenameOp,
-  onPhotoFile, photoBusyMachineId, photoBusyKind, onManualEntry,
-  onAddProduction, onUndoProduction, onSetBlockPreset, editUnlocked, onToggleLock,
-  onStartCalibration, onSetCalibrationPhase, onCancelCalibration, onFinishCalibration,
-}) {
-  const { unlocked } = React.useContext(EditLockContext);
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(cell.name);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [showAddMachine, setShowAddMachine] = useState(false);
-  const preset = cell.blockPreset || '6cc';
-
-  return (
-    <div>
-      {/* Barra própria, sangrando até a borda da tela — pra ficar
-          inconfundível que isso é uma tela diferente da lista principal. */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        margin: '-18px -14px 16px', padding: '14px 10px 14px 6px',
-        background: C.surfaceRaised, borderBottom: `2px solid ${C.accent}`,
-      }}>
-        <IconBtn title="Voltar" onClick={onBack}><ArrowLeft size={20} color={C.accent} /></IconBtn>
-        {renaming ? (
-          <input
-            autoFocus
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { onRename(nameDraft); setRenaming(false); } }}
-            style={{ flex: 1, background: C.surfaceDeep, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '6px 9px', color: C.text, fontSize: 16 }}
-          />
-        ) : (
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.text }}>{cell.name}</div>
-            <div style={{ fontSize: 12, color: C.textFaint }}>
-              {cell.machines.length} {cell.machines.length === 1 ? 'máquina' : 'máquinas'} · bloco {preset}
-            </div>
-          </div>
-        )}
-        {renaming ? (
-          <div className="flex items-center">
-            <IconBtn onClick={() => { onRename(nameDraft); setRenaming(false); }}><Check size={16} color={C.ok} /></IconBtn>
-            <IconBtn onClick={() => { setNameDraft(cell.name); setRenaming(false); }}><X size={16} /></IconBtn>
-          </div>
-        ) : (
-          <div className="flex items-center">
-            {unlocked && (
-              <>
-                <IconBtn title="Renomear" onClick={() => setRenaming(true)}><Pencil size={15} /></IconBtn>
-                <IconBtn title="Excluir" danger onClick={() => setConfirmDelete(true)}><Trash2 size={15} /></IconBtn>
-              </>
-            )}
-            <button
-              onClick={onToggleLock}
-              title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
-              style={{
-                marginLeft: 2, background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
-                border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 8px', cursor: 'pointer',
-                display: 'flex', alignItems: 'center',
-              }}
-            >
-              {editUnlocked ? <Unlock size={14} /> : <Lock size={14} />}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {confirmDelete && (
-        <div style={{ borderRadius: 8, overflow: 'hidden', marginBottom: 10, border: `1px solid ${C.border}` }}>
-          <DeleteConfirmBar label={`Excluir "${cell.name}" e tudo dentro dela?`} onCancel={() => setConfirmDelete(false)} onConfirm={onDelete} />
-        </div>
-      )}
-
-      <SummaryStrip cells={[cell]} hideCellName />
-
-      {unlocked && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11.5, color: C.textFaint, marginBottom: 5 }}>
-            Bloco padrão desta célula (define o desgaste/peça de todas as ferramentas)
-          </div>
-          <div className="flex gap-2">
-            {['4cc', '6cc'].map((p) => (
-              <button
-                key={p}
-                onClick={() => onSetBlockPreset(cell.id, p)}
-                style={{
-                  flex: 1, padding: '8px 0', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-                  background: preset === p ? C.accentSoft : 'transparent',
-                  color: preset === p ? C.accent : C.textDim,
-                  border: `1px solid ${preset === p ? C.accent : C.border}`,
-                }}
-              >
-                {p === '4cc' ? '4cc • 6509' : '6cc • 6508'}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Máquinas</div>
-
-      {unlocked && !showAddMachine && (
-        <button
-          onClick={() => setShowAddMachine(true)}
-          className="flex items-center gap-1.5 justify-center w-full mb-2"
-          style={{ background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 7, padding: '9px 0', fontSize: 12.5, cursor: 'pointer' }}
-        >
-          <Plus size={14} /> Nova máquina
-        </button>
-      )}
-      {showAddMachine && (
-        <AddMachinePanel
-          otherMachines={otherMachines}
-          onSave={(machine) => { onAddMachine(machine); setShowAddMachine(false); }}
-          onCancel={() => setShowAddMachine(false)}
-        />
-      )}
-
-      {cell.machines.length === 0 && !showAddMachine && (
-        <div style={{ fontSize: 12.5, color: C.textFaint, padding: '10px 0', textAlign: 'center' }}>
-          {unlocked ? 'Nenhuma máquina cadastrada nesta célula ainda.' : 'Sem máquinas. Destrave o cadeado para cadastrar.'}
-        </div>
-      )}
-
-      {cell.machines.map((m) => (
-        <MachineCard
-          key={m.id}
-          machine={m}
-          expanded={expandedMachineId === m.id}
-          onToggle={() => onToggleMachine(m.id)}
-          onRename={(name) => onRenameMachine(m.id, name)}
-          onDelete={() => onDeleteMachine(m.id)}
-          onAddOperation={(op) => onAddOperation(m.id, op)}
-          onToggleOp={onToggleOp}
-          expandedOpId={expandedOpId}
-          onUpdateTool={onUpdateTool}
-          onDeleteTool={onDeleteTool}
-          onAddTool={onAddTool}
-          onDeleteOp={onDeleteOp}
-          onRenameOp={onRenameOp}
-          onPhotoFile={onPhotoFile}
-          photoBusy={photoBusyMachineId === m.id ? photoBusyKind : null}
-          onManualEntry={onManualEntry}
-          onAddProduction={onAddProduction}
-          onUndoProduction={onUndoProduction}
-          blockPreset={preset}
-          onStartCalibration={onStartCalibration}
-          onSetCalibrationPhase={onSetCalibrationPhase}
-          onCancelCalibration={onCancelCalibration}
-          onFinishCalibration={onFinishCalibration}
-        />
-      ))}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add cell panel                                                         */
-/* ---------------------------------------------------------------------- */
-
-function AddCellPanel({ onSave, onCancel }) {
-  const [name, setName] = useState('');
-  return (
-    <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.accent}`, padding: 14, marginBottom: 14 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Nova célula</div>
-      <Field label="Nome ou número da célula">
-        <TextInput autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Célula 9" style={{ fontFamily: SANS }} />
-      </Field>
-      <div className="flex gap-2 mt-3">
-        <button
-          onClick={() => { if (name.trim()) onSave({ id: genId('cell'), name: name.trim(), blockPreset: '6cc', machines: [] }); }}
-          disabled={!name.trim()}
-          className="flex items-center gap-1.5 justify-center"
-          style={{ flex: 1, background: name.trim() ? C.accent : C.border, color: name.trim() ? '#1a1207' : C.textFaint, border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'default' }}
-        >
-          <Check size={15} /> Salvar célula
-        </button>
-        <button onClick={onCancel} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '10px 16px', fontSize: 13.5, cursor: 'pointer' }}>
-          Cancelar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Summary strip                                                          */
-/* ---------------------------------------------------------------------- */
-
-function SummaryStrip({ cells, title = 'Mais próximas de quebrar', hideCellName = false }) {
-  const rows = flattenToolRows(cells)
-    .map((r) => ({ ...r, remaining: computeRemaining(r.tool, r.preset) }))
-    .filter((r) => r.remaining !== null)
-    .sort((a, b) => a.remaining - b.remaining)
-    .slice(0, 5);
-
-  if (rows.length === 0) {
-    return <div style={{ padding: '14px 4px', color: C.textFaint, fontSize: 12.5 }}>Cadastre ferramentas para ver aqui quais quebram primeiro.</div>;
-  }
-
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>{title}</div>
-      <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.border}` }}>
-        {rows.map((r, i) => {
-          const status = statusFor(r.remaining);
-          return (
-            <div
-              key={r.tool.id}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : 'none',
-                background: status === 'critical' || status === 'expired' ? STATUS_SOFT[status] : 'transparent',
-              }}
-            >
-              <StatusDot status={status} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, color: C.text, fontFamily: MONO }}>{r.tool.slot}</div>
-                <div style={{ fontSize: 11.5, color: C.textFaint }}>{hideCellName ? '' : `${r.cellName} · `}{r.machineName} · {r.opName}</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: STATUS_COLOR[status] }}>{r.remaining}</div>
-                <div style={{ fontSize: 10, color: C.textFaint }}>peças</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      {/* Alinhada à mesma coluna onde o texto aparece em cada linha (depois
-          da bolinha de status), não centralizada na largura toda — e some
-          "Célula" daqui quando já estamos dentro da célula (hideCellName),
-          senão fica redundante com o cabeçalho da tela. */}
-      <div style={{ fontSize: 10.5, color: C.textFaint, textAlign: 'left', marginTop: 6, paddingLeft: 29 }}>
-        {hideCellName ? 'Máquina · Operação' : 'Célula · Máquina · Operação'}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* OCR review modal                                                       */
-/* ---------------------------------------------------------------------- */
-
-function OcrModal({ state, onClose, onRetake, onSave }) {
-  const { machineLabel, status, rows, error } = state;
-  const [localRows, setLocalRows] = useState(rows || []);
-  const [showVU, setShowVU] = useState(false);
-
-  React.useEffect(() => {
-    setLocalRows(rows || []);
-    // Só abre a seção de vida útil sozinha quando a leitura realmente
-    // trouxe algo pra ela (ex: foto da tela #800-849) — no dia a dia
-    // (vida atual / digitar manualmente) ela fica fechada.
-    const hasVU = (rows || []).some((r) => !r.isRoutine && (r.newVidaUtil !== '' || r.vidaUtilConfidence === 'low'));
-    setShowVU(hasVU);
-  }, [rows]);
-
-  const lowConfidenceCount = localRows.reduce((n, r) => {
-    let c = 0;
-    if (r.vidaAtualConfidence === 'low') c++;
-    if (!r.isRoutine && r.vidaUtilConfidence === 'low') c++;
-    return n + c;
-  }, 0);
-
-  function patchRow(idx, field, value) {
-    setLocalRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
-  }
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: C.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, width: '100%', maxWidth: 480, maxHeight: '86vh', overflowY: 'auto', border: `1px solid ${C.borderLight}`, borderBottom: 'none', padding: 16 }}
-      >
-        <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: '0 auto 14px' }} />
-        <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Conferir leitura</div>
-        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14 }}>{machineLabel}</div>
-
-        {status === 'loading' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '30px 0' }}>
-            <Loader2 size={26} color={C.accent} className="animate-spin" />
-            <span style={{ fontSize: 13, color: C.textDim, textAlign: 'center' }}>Lendo painel...</span>
-            <span style={{ fontSize: 12, color: C.textFaint, textAlign: 'center' }}>processamento local, pode levar alguns segundos</span>
-          </div>
-        )}
-
-        {status === 'error' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '20px 0' }}>
-            <AlertTriangle size={26} color={C.crit} />
-            <span style={{ fontSize: 13, color: C.text, textAlign: 'center' }}>
-              Não foi possível ler a foto{error ? ` (${error})` : ''}. Tente novamente com mais luz e sem tremer.
-            </span>
-            <button onClick={onRetake} className="flex items-center gap-1.5" style={{ background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              <Camera size={14} /> Tentar outra foto
-            </button>
-          </div>
-        )}
-
-        {status === 'review' && (
-          <>
-            {lowConfidenceCount > 0 && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, padding: '9px 10px', marginBottom: 12 }}>
-                <AlertTriangle size={15} color={C.warn} style={{ flexShrink: 0, marginTop: 1 }} />
-                <span style={{ fontSize: 12, color: C.text }}>
-                  {lowConfidenceCount} valor{lowConfidenceCount > 1 ? 'es' : ''} ficou{lowConfidenceCount > 1 ? 'ram' : ''} pouco nítido{lowConfidenceCount > 1 ? 's' : ''} na foto. Confira, digite manualmente ou repita a foto.
-                </span>
-              </div>
-            )}
-
-            <div style={{ marginBottom: 10 }}>
-              {localRows.map((row, idx) => (
-                <div key={row.toolId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
-                  <div style={{ minWidth: 56 }}>
-                    <div style={{ fontFamily: MONO, fontSize: 14, color: C.text }}>{row.slot}</div>
-                    {row.opName && <div style={{ fontSize: 9.5, color: C.textFaint }}>{row.opName}</div>}
-                  </div>
-                  <StatusDot status={dotStatusForConfidence(row.vidaAtualConfidence)} />
-                  <TextInput
-                    inputMode="decimal"
-                    value={row.newVidaAtual}
-                    placeholder="—"
-                    onChange={(e) => patchRow(idx, 'newVidaAtual', e.target.value)}
-                    style={{ flex: 1, textAlign: 'center', fontSize: 15, padding: '7px 4px', borderColor: row.vidaAtualConfidence === 'low' ? C.warn : C.border }}
-                  />
-                  <span style={{ fontSize: 10, color: C.textFaint, minWidth: 50, textAlign: 'right' }}>{fmtNum(row.oldVidaAtual)} antes</span>
-                </div>
-              ))}
-            </div>
-
-            {/* Vida útil quase nunca muda depois de definida — fica fechada
-                por padrão pra não competir com o que você mexe todo dia. */}
-            <div style={{ marginBottom: 12 }}>
-              <button
-                onClick={() => setShowVU((v) => !v)}
-                className="flex items-center gap-1.5 justify-center w-full"
-                style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '7px 0', fontSize: 12, cursor: 'pointer' }}
-              >
-                {showVU ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Vida útil (raramente muda)
-              </button>
-              {showVU && (
-                <div style={{ background: C.surfaceDeep, borderRadius: 8, padding: '2px 10px', marginTop: 6 }}>
-                  {localRows.map((row, idx) => {
-                    if (row.isRoutine) return null;
-                    return (
-                      <div key={row.toolId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
-                        <span style={{ fontFamily: MONO, fontSize: 12.5, color: C.text, minWidth: 44 }}>{row.slot}</span>
-                        <StatusDot status={dotStatusForConfidence(row.vidaUtilConfidence)} />
-                        <TextInput
-                          inputMode="decimal"
-                          value={row.newVidaUtil}
-                          placeholder="—"
-                          onChange={(e) => patchRow(idx, 'newVidaUtil', e.target.value)}
-                          style={{ flex: 1, textAlign: 'center', fontSize: 13, padding: '5px 4px', borderColor: row.vidaUtilConfidence === 'low' ? C.warn : C.border }}
-                        />
-                        <span style={{ fontSize: 9.5, color: C.textFaint, minWidth: 44, textAlign: 'right' }}>{fmtNum(row.oldVidaUtil)} antes</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 12 }}>Campos em branco mantêm o valor atual.</div>
-
-            <div className="flex gap-2">
-              <button onClick={() => onSave(localRows)} className="flex items-center gap-1.5 justify-center" style={{ flex: 1, background: C.accent, color: '#1a1207', border: 'none', borderRadius: 7, padding: '10px 0', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>
-                <Check size={15} /> Salvar leitura
-              </button>
-              <button onClick={onRetake} className="flex items-center gap-1.5 justify-center" style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 7, padding: '10px 14px', fontSize: 13.5, cursor: 'pointer' }}>
-                <RotateCcw size={14} /> Repetir foto
-              </button>
-            </div>
-          </>
-        )}
-
-        <button onClick={onClose} style={{ display: 'block', margin: '14px auto 0', background: 'transparent', border: 'none', color: C.textFaint, fontSize: 12, cursor: 'pointer' }}>
-          Fechar
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Root                                                                    */
-/* ---------------------------------------------------------------------- */
+import { readPanelPhoto } from './ocr.js';
+import {
+  updateCellById, updateMachineById, updateOperationById, updateToolById, getToolDesgaste, findMachine, buildRowsForMachine,
+} from './logic.js';
+import { HomeScreen, CellsScreen, CellScreen, NotesScreen, SettingsScreen, BottomNav } from './screens.jsx';
+import {
+  ToolSheet, PhotoSheet, ProductionSheet, CalibrationSheet, NoteSheet, AddCellSheet, AddMachineSheet,
+  AddOperationSheet, AddToolSheet, EditOperationSheet,
+} from './sheets.jsx';
+import { CropModal, OcrReviewSheet } from './tooling.jsx';
+
+const PAGE_TYPES = ['cell', 'cellNotes'];
 
 export default function App() {
   const [cells, setCells] = useState(() => loadData().cells);
-  const [expandedCellId, setExpandedCellId] = useState(null);
-  const [expandedMachineId, setExpandedMachineId] = useState(null);
-  const [expandedOpId, setExpandedOpId] = useState(null);
-  const [addingCell, setAddingCell] = useState(false);
-  const [ocrModal, setOcrModal] = useState(null);
-  const [photoBusyMachineId, setPhotoBusyMachineId] = useState(null);
-  const [photoBusyKind, setPhotoBusyKind] = useState(null);
-  const [pendingCrop, setPendingCrop] = useState(null); // { machineId, kind, file }
-  const [editUnlocked, setEditUnlocked] = useState(false);
-  const [pendingImport, setPendingImport] = useState(null);
-  const [importError, setImportError] = useState('');
-  const importInputRef = useRef(null);
-
-  const selectedCell = cells.find((c) => c.id === expandedCellId) || null;
-
-  // Integra com o histórico do navegador: entrar numa célula empurra uma
-  // "página" nova, e o botão/gesto voltar do Android sai dela em vez de
-  // fechar o app inteiro.
-  function openCell(cellId) {
-    window.history.pushState({ cellId }, '');
-    setExpandedCellId(cellId);
-    setExpandedMachineId(null);
-    setExpandedOpId(null);
-  }
-  React.useEffect(() => {
-    function onPopState() {
-      setExpandedCellId(null);
-      setExpandedMachineId(null);
-      setExpandedOpId(null);
-    }
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  const [tab, setTab] = useState('inicio');
+  const [stack, setStack] = useState([]);
+  const stackRef = useRef(stack);
+  stackRef.current = stack;
 
   const persist = useCallback((updater) => {
     setCells((prev) => {
@@ -2025,535 +30,278 @@ export default function App() {
     });
   }, []);
 
-  function toggleMachine(machineId) {
-    setExpandedMachineId((cur) => {
-      if (cur === machineId) return null;
-      setExpandedOpId(null);
-      return machineId;
-    });
-  }
-  function toggleOp(opId) {
-    setExpandedOpId((cur) => (cur === opId ? null : opId));
-  }
+  /* ------------------------------------------------------------------ */
+  /* Navegação: cada tela/folha aberta vira uma entrada no histórico, aí */
+  /* o botão voltar do Android fecha a de cima em vez de sair do app.    */
+  /* ------------------------------------------------------------------ */
+  React.useEffect(() => {
+    function onPop() { setStack((s) => s.slice(0, -1)); }
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const nav = {
+    push(item) { window.history.pushState({ toolpy: true }, ''); setStack((s) => [...s, item]); },
+    close() { if (stackRef.current.length) window.history.back(); },
+    replaceTop(item) { setStack((s) => (s.length ? [...s.slice(0, -1), item] : [item])); if (!stackRef.current.length) window.history.pushState({ toolpy: true }, ''); },
+    patchTop(type, patch) { setStack((s) => s.map((it, i) => (i === s.length - 1 && it.type === type ? { ...it, ...patch } : it))); },
+    reset() { setStack([]); },
+  };
 
-  function addCell(cell) {
-    persist((prev) => [...prev, cell]);
-    setAddingCell(false);
-    openCell(cell.id); // entra direto na célula recém-criada
-  }
+  /* ------------------------------------------------------------------ */
+  /* Ações sobre os dados                                               */
+  /* ------------------------------------------------------------------ */
+  const act = {
+    addCell(cell) { persist((p) => [...p, cell]); },
+    deleteCell(cellId) { persist((p) => p.filter((c) => c.id !== cellId)); },
+    renameCell(cellId, name) { if (name.trim()) persist((p) => updateCellById(p, cellId, (c) => ({ ...c, name: name.trim() }))); },
+    reorderCells(next) { persist(() => next); },
+    setBlockPreset(cellId, preset) { persist((p) => updateCellById(p, cellId, (c) => ({ ...c, blockPreset: preset }))); },
 
-  function handleExport() {
-    exportBackup(cells);
-  }
+    addMachine(cellId, machine) { persist((p) => updateCellById(p, cellId, (c) => ({ ...c, machines: [...c.machines, machine] }))); },
+    deleteMachine(cellId, machineId) { persist((p) => updateCellById(p, cellId, (c) => ({ ...c, machines: c.machines.filter((m) => m.id !== machineId) }))); },
+    renameMachine(machineId, name) { if (name.trim()) persist((p) => updateMachineById(p, machineId, (m) => ({ ...m, name: name.trim() }))); },
 
-  async function handleImportFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setImportError('');
-    try {
-      const imported = await importBackup(file);
-      setPendingImport(imported);
-    } catch (err) {
-      setImportError('Esse arquivo não parece um backup válido.');
-    }
-  }
-
-  function confirmImport() {
-    persist(() => pendingImport);
-    setPendingImport(null);
-    setExpandedCellId(null);
-    setExpandedMachineId(null);
-    setExpandedOpId(null);
-  }
-  function deleteCell(cellId) {
-    persist((prev) => prev.filter((c) => c.id !== cellId));
-  }
-  function renameCell(cellId, name) {
-    if (!name.trim()) return;
-    persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, name: name.trim() })));
-  }
-  // Reordenar a lista de células (arrastar pela alça, só com o cadeado
-  // aberto) — recebe a lista inteira já na nova ordem.
-  function reorderCells(nextCells) {
-    persist(() => nextCells);
-  }
-
-  function addMachine(cellId, machine) {
-    persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, machines: [...c.machines, machine] })));
-    setExpandedMachineId(machine.id);
-  }
-  function deleteMachine(cellId, machineId) {
-    persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, machines: c.machines.filter((m) => m.id !== machineId) })));
-  }
-  function renameMachine(machineId, name) {
-    if (!name.trim()) return;
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, name: name.trim() })));
-  }
-
-  function addOperation(machineId, op) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, operations: [...m.operations, op] })));
-  }
-  function deleteOperation(opId) {
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => ({ ...m, operations: m.operations.filter((o) => o.id !== opId) })),
-    })));
-  }
-  function renameOperation(opId, name, pallet) {
-    if (!name.trim()) return;
-    persist((prev) => {
-      let next = updateOperationById(prev, opId, (o) => ({ ...o, name: name.trim(), pallet: pallet ?? o.pallet ?? null }));
-      if (pallet === 1 || pallet === 2) {
-        // Com exatamente 2 operações na máquina, definir o pallet de uma
-        // já resolve a outra sozinha (só existem 2 pallets possíveis).
-        next.forEach((c) => {
-          c.machines.forEach((m) => {
-            const inThisMachine = m.operations.some((o) => o.id === opId);
-            if (inThisMachine && m.operations.length === 2) {
+    addOperation(machineId, op) { persist((p) => updateMachineById(p, machineId, (m) => ({ ...m, operations: [...m.operations, op] }))); },
+    deleteOperation(opId) {
+      persist((p) => p.map((c) => ({ ...c, machines: c.machines.map((m) => ({ ...m, operations: m.operations.filter((o) => o.id !== opId) })) })));
+    },
+    // Com exatamente 2 operações na máquina, definir o pallet de uma já
+    // resolve a outra (só existem 2 pallets).
+    updateOperation(opId, name, pallet) {
+      if (!name.trim()) return;
+      persist((p) => {
+        let next = updateOperationById(p, opId, (o) => ({ ...o, name: name.trim(), pallet: pallet ?? null }));
+        if (pallet === 1 || pallet === 2) {
+          next.forEach((c) => c.machines.forEach((m) => {
+            if (m.operations.some((o) => o.id === opId) && m.operations.length === 2) {
               const other = m.operations.find((o) => o.id !== opId);
-              if (other) {
-                const complementary = pallet === 1 ? 2 : 1;
-                next = updateOperationById(next, other.id, (o) => ({ ...o, pallet: complementary }));
-              }
+              if (other) next = updateOperationById(next, other.id, (o) => ({ ...o, pallet: pallet === 1 ? 2 : 1 }));
             }
-          });
-        });
+          }));
+        }
+        return next;
+      });
+    },
+
+    addTool(opId, tool) { persist((p) => updateOperationById(p, opId, (o) => ({ ...o, tools: [...o.tools, tool] }))); },
+    addTools(opId, tools) { persist((p) => updateOperationById(p, opId, (o) => ({ ...o, tools: [...o.tools, ...tools] }))); },
+    updateTool(opId, toolId, patch) { persist((p) => updateToolById(p, opId, toolId, (t) => ({ ...t, ...patch, lastUpdated: new Date().toISOString() }))); },
+    resetTool(opId, toolId) { act.updateTool(opId, toolId, { vidaAtual: 0, lastReset: new Date().toISOString() }); },
+    deleteTool(opId, toolId) { persist((p) => updateOperationById(p, opId, (o) => ({ ...o, tools: o.tools.filter((t) => t.id !== toolId) }))); },
+
+    // Produção de um turno: soma "desgaste x peças" em toda ferramenta do pallet.
+    addProduction(machineId, pallet, pieces) {
+      if (!pieces || pieces <= 0) return;
+      persist((p) => p.map((c) => ({
+        ...c,
+        machines: c.machines.map((m) => {
+          if (m.id !== machineId) return m;
+          const preset = c.blockPreset || '6cc';
+          return {
+            ...m,
+            lastAdd: { ...(m.lastAdd || {}), [pallet]: { amount: pieces, appliedAt: Date.now() } },
+            operations: m.operations.map((o) => (o.pallet !== pallet ? o : {
+              ...o,
+              tools: o.tools.map((t) => ({ ...t, vidaAtual: (parseFloat(t.vidaAtual) || 0) + getToolDesgaste(t, preset) * pieces, lastUpdated: new Date().toISOString() })),
+            })),
+          };
+        }),
+      })));
+    },
+    undoProduction(machineId, pallet) {
+      persist((p) => p.map((c) => ({
+        ...c,
+        machines: c.machines.map((m) => {
+          if (m.id !== machineId) return m;
+          const last = (m.lastAdd || {})[pallet];
+          if (!last) return m;
+          const preset = c.blockPreset || '6cc';
+          return {
+            ...m,
+            lastAdd: { ...(m.lastAdd || {}), [pallet]: null },
+            operations: m.operations.map((o) => (o.pallet !== pallet ? o : {
+              ...o,
+              tools: o.tools.map((t) => ({ ...t, vidaAtual: Math.max(0, (parseFloat(t.vidaAtual) || 0) - getToolDesgaste(t, preset) * last.amount) })),
+            })),
+          };
+        }),
+      })));
+    },
+
+    // Calibração: leitura FRESCA no início e no fim (nunca o valor
+    // acumulado pelo contador), senão a conta só confirma o próprio chute.
+    startCalibration(machineId) {
+      persist((p) => updateMachineById(p, machineId, (m) => ({
+        ...m,
+        calibration: { preset: p.find((c) => c.machines.some((mm) => mm.id === machineId))?.blockPreset || '6cc', phase: 'awaiting_start', startedAt: new Date().toISOString() },
+      })));
+    },
+    setCalibrationPhase(machineId, phase) { persist((p) => updateMachineById(p, machineId, (m) => (m.calibration ? { ...m, calibration: { ...m.calibration, phase } } : m))); },
+    cancelCalibration(machineId) { persist((p) => updateMachineById(p, machineId, (m) => ({ ...m, calibration: null }))); },
+    finishCalibration(machineId, readyRows) {
+      const byId = {};
+      readyRows.forEach((r) => { byId[r.toolId] = r.computed; });
+      persist((p) => p.map((c) => ({
+        ...c,
+        machines: c.machines.map((m) => {
+          if (m.id !== machineId) return m;
+          const preset = m.calibration?.preset || c.blockPreset || '6cc';
+          return {
+            ...m,
+            calibration: null,
+            operations: m.operations.map((o) => ({
+              ...o,
+              tools: o.tools.map((t) => {
+                const val = byId[t.id];
+                if (val === undefined) return t;
+                const prevMap = (t.desgastePeca && typeof t.desgastePeca === 'object') ? t.desgastePeca : {};
+                return { ...t, desgastePeca: { ...prevMap, [preset]: Math.round(val * 100) / 100 } };
+              }),
+            })),
+          };
+        }),
+      })));
+    },
+
+    // Foto de vida atual/útil: folha de foto → recorte → OCR → conferência.
+    startPhotoRead(machineId, kind, file) { nav.replaceTop({ type: 'crop', machineId, kind, file }); },
+    async processCrop(canvas) {
+      const top = stackRef.current[stackRef.current.length - 1];
+      if (!top || top.type !== 'crop') return;
+      const fm = findMachine(cells, top.machineId);
+      if (!fm) { nav.close(); return; }
+      const label = `${fm.cell.name} · ${fm.machine.name} · ${top.kind === 'util' ? 'vida útil' : 'vida atual'}`;
+      nav.replaceTop({ type: 'ocr', machineId: top.machineId, kind: top.kind, label, status: 'loading', rows: [] });
+      try {
+        const readings = await readPanelPhoto(canvas);
+        const byNum = {};
+        readings.forEach((r) => { byNum[r.num] = r; });
+        nav.patchTop('ocr', { status: 'review', rows: buildRowsForMachine(fm.machine, byNum) });
+      } catch (err) {
+        nav.patchTop('ocr', { status: 'error', error: err.message });
       }
-      return next;
-    });
-  }
-
-  function addTool(opId, tool) {
-    persist((prev) => updateOperationById(prev, opId, (o) => ({ ...o, tools: [...o.tools, tool] })));
-  }
-  function updateTool(opId, toolId, patch) {
-    persist((prev) => updateToolById(prev, opId, toolId, (t) => ({ ...t, ...patch, lastUpdated: new Date().toISOString() })));
-  }
-  function deleteTool(opId, toolId) {
-    persist((prev) => updateOperationById(prev, opId, (o) => ({ ...o, tools: o.tools.filter((t) => t.id !== toolId) })));
-  }
-
-  // Preset de bloco (4cc/6cc) da célula: sobrescreve o desgaste/peça de
-  // TODAS as ferramentas dela de uma vez — um jeito rápido de trocar
-  // quando o tipo de bloco rodado muda.
-  // Trocar o preset só muda QUAL valor é usado pro cálculo (cada
-  // ferramenta guarda um desgaste por bloco) — nunca mais sobrescreve o
-  // que já foi calibrado.
-  function setBlockPreset(cellId, preset) {
-    persist((prev) => updateCellById(prev, cellId, (c) => ({ ...c, blockPreset: preset })));
-  }
-
-  // O computador mostra a produção de CADA TURNO como número solto (não
-  // um contador corrido) — então aqui é só somar: pega quantas peças
-  // aquele turno fez e soma "desgaste x peças" na vida atual de toda
-  // ferramenta daquele pallet. Cada turno é lançado como uma ação
-  // independente (sua, do 6º, do 1º...), sem precisar comparar com nada.
-  function addPalletProduction(machineId, pallet, pieces) {
-    if (!pieces || pieces <= 0) return;
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => {
-        if (m.id !== machineId) return m;
-        const preset = c.blockPreset || '6cc';
-        return {
-          ...m,
-          lastAdd: { ...(m.lastAdd || {}), [pallet]: { amount: pieces, appliedAt: Date.now() } },
-          operations: m.operations.map((o) => {
-            if (o.pallet !== pallet) return o;
-            return {
-              ...o,
-              tools: o.tools.map((t) => {
-                const desg = getToolDesgaste(t, preset);
-                return { ...t, vidaAtual: (parseFloat(t.vidaAtual) || 0) + desg * pieces, lastUpdated: new Date().toISOString() };
-              }),
-            };
-          }),
-        };
-      }),
-    })));
-  }
-
-  // Desfaz só o último lançamento daquele pallet — pra corrigir um
-  // número digitado errado sem precisar editar ferramenta por ferramenta.
-  function undoPalletProduction(machineId, pallet) {
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => {
-        if (m.id !== machineId) return m;
-        const last = (m.lastAdd || {})[pallet];
-        if (!last) return m;
-        const preset = c.blockPreset || '6cc';
-        return {
-          ...m,
-          lastAdd: { ...(m.lastAdd || {}), [pallet]: null },
-          operations: m.operations.map((o) => {
-            if (o.pallet !== pallet) return o;
-            return {
-              ...o,
-              tools: o.tools.map((t) => {
-                const desg = getToolDesgaste(t, preset);
-                return { ...t, vidaAtual: Math.max(0, (parseFloat(t.vidaAtual) || 0) - desg * last.amount) };
-              }),
-            };
-          }),
-        };
-      }),
-    })));
-  }
-
-  // Calibração: em vez de guardar a vida atual que já está na tela (que
-  // pode ter sido incrementada pelo contador de peças usando um desgaste
-  // ainda não calibrado), pede uma leitura FRESCA do painel no início e
-  // outra no fim — só assim a conta mede de verdade, sem se confirmar
-  // sozinha em cima do próprio chute que está tentando corrigir.
-  function startCalibration(machineId) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({
-      ...m,
-      calibration: { preset: prev.find((c) => c.machines.some((mm) => mm.id === machineId))?.blockPreset || '6cc', phase: 'awaiting_start', startedAt: new Date().toISOString() },
-    })));
-  }
-
-  function setCalibrationPhase(machineId, phase) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => (
-      m.calibration ? { ...m, calibration: { ...m.calibration, phase } } : m
-    )));
-  }
-
-  function cancelCalibration(machineId) {
-    persist((prev) => updateMachineById(prev, machineId, (m) => ({ ...m, calibration: null })));
-  }
-
-  function finishCalibration(machineId, readyRows) {
-    const byId = {};
-    readyRows.forEach((r) => { byId[r.toolId] = r.computed; });
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => {
-        if (m.id !== machineId) return m;
-        const preset = m.calibration?.preset || c.blockPreset || '6cc';
-        return {
-          ...m,
-          calibration: null,
-          operations: m.operations.map((o) => ({
+    },
+    openManualEntry(machineId) {
+      const fm = findMachine(cells, machineId);
+      if (!fm) return;
+      const item = { type: 'ocr', manual: true, machineId, label: `${fm.cell.name} · ${fm.machine.name}`, status: 'review', rows: buildRowsForMachine(fm.machine, {}) };
+      const top = stackRef.current[stackRef.current.length - 1];
+      if (top && top.type === 'photo') nav.replaceTop(item); else nav.push(item);
+    },
+    saveOcrRows(machineId, rows) {
+      const byToolId = {};
+      rows.forEach((r) => { byToolId[r.toolId] = r; });
+      const fm = findMachine(cells, machineId);
+      const willBeReady = fm?.machine.calibration?.phase === 'awaiting_finish';
+      persist((p) => p.map((c) => ({
+        ...c,
+        machines: c.machines.map((m) => {
+          const ops = m.operations.map((o) => ({
             ...o,
             tools: o.tools.map((t) => {
-              const val = byId[t.id];
-              if (val === undefined) return t;
-              const prevMap = (t.desgastePeca && typeof t.desgastePeca === 'object') ? t.desgastePeca : {};
-              return { ...t, desgastePeca: { ...prevMap, [preset]: Math.round(val * 100) / 100 } };
+              const row = byToolId[t.id];
+              if (!row) return t;
+              const patch = {};
+              const va = parseFloat(row.newVidaAtual);
+              if (row.newVidaAtual !== '' && !isNaN(va)) patch.vidaAtual = va;
+              if (!t.isRoutine) {
+                const vu = parseFloat(row.newVidaUtil);
+                if (row.newVidaUtil !== '' && !isNaN(vu)) patch.vidaUtil = vu;
+              }
+              return Object.keys(patch).length ? { ...t, ...patch, lastUpdated: new Date().toISOString() } : t;
             }),
-          })),
-        };
-      }),
-    })));
-  }
-
-  function findMachine(cellsList, machineId) {
-    for (const c of cellsList) {
-      const m = c.machines.find((mm) => mm.id === machineId);
-      if (m) return { cell: c, machine: m };
-    }
-    return null;
-  }
-
-  // O OCR local pode "achar" que leu certo mesmo quando pulou um pedaço
-  // do número (ex: ler "30" em vez de "2030"). Como o desgaste só sobe
-  // aos pouquinhos entre uma foto e outra, um salto grande demais é
-  // sinal de leitura quebrada — força conferência mesmo que o Tesseract
-  // tenha reportado confiança alta.
-  function isImplausibleJump(oldVal, newVal) {
-    const o = parseFloat(oldVal);
-    const n = parseFloat(newVal);
-    if (isNaN(o) || isNaN(n)) return false;
-    if (n === 0 || o === 0) return false; // reset de ferramenta trocada, ou ainda sem histórico
-    return Math.abs(n - o) > Math.max(30, o * 0.5);
-  }
-
-  // Monta as linhas da tela de conferência pra TODAS as ferramentas de
-  // uma máquina (todas as operações juntas). readingByNum vazio = modo
-  // manual, sem nenhuma leitura de OCR (usado pelo "Adicionar manualmente").
-  function buildRowsForMachine(machine, readingByNum) {
-    const allTools = [];
-    machine.operations.forEach((op) => {
-      op.tools.forEach((t) => allTools.push({ tool: t, opName: op.name }));
-    });
-
-    const rows = allTools.map(({ tool: t, opName }) => {
-      const atualNum = slotToAtualNum(t.slot);
-      const atualReading = atualNum !== null ? readingByNum[atualNum] : undefined;
-      const limiteNum = t.isRoutine ? null : slotToLimiteNum(t.slot);
-      const limiteReading = limiteNum !== null ? readingByNum[limiteNum] : undefined;
-
-      let vidaAtualConfidence = atualReading ? atualReading.confidence : 'missing';
-      if (atualReading && isImplausibleJump(t.vidaAtual, atualReading.value)) {
-        vidaAtualConfidence = 'low';
-      }
-
-      let vidaUtilConfidence = limiteReading ? limiteReading.confidence : 'missing';
-      if (limiteReading && !t.isRoutine) {
-        const oldVU = parseFloat(t.vidaUtil);
-        if (!isNaN(oldVU) && oldVU > 0 && Math.abs(limiteReading.value - oldVU) > 0.01) {
-          // vida útil quase nunca muda depois de cadastrada — qualquer
-          // diferença aqui merece conferência, mesmo com confiança alta.
-          vidaUtilConfidence = 'low';
-        }
-      }
-
-      return {
-        toolId: t.id,
-        slot: t.slot,
-        opName,
-        isRoutine: t.isRoutine,
-        oldVidaAtual: t.vidaAtual,
-        newVidaAtual: atualReading ? String(atualReading.value) : '',
-        vidaAtualConfidence,
-        oldVidaUtil: t.vidaUtil,
-        newVidaUtil: limiteReading ? String(limiteReading.value) : '',
-        vidaUtilConfidence,
-      };
-    });
-    rows.sort((a, b) => compareSlots(a.slot, b.slot));
-    return rows;
-  }
-
-  // Chamado pelos botões de câmera/galeria de cada linha (vida útil ou
-  // vida atual) — só guarda o arquivo e abre a tela de recorte. O OCR só
-  // roda depois que o recorte for confirmado (processCroppedPhoto).
-  function onPhotoFile(machineId, kind, file) {
-    setPendingCrop({ machineId, kind, file });
-  }
-
-  function cancelCrop() {
-    setPendingCrop(null);
-  }
-
-  async function processCroppedPhoto(canvas) {
-    const { machineId, kind } = pendingCrop;
-    setPendingCrop(null);
-    const found = findMachine(cells, machineId);
-    if (!found) return;
-    const machineLabel = `${found.cell.name} · ${found.machine.name}`;
-    const kindLabel = kind === 'util' ? 'vida útil' : 'vida atual';
-
-    setPhotoBusyMachineId(machineId);
-    setPhotoBusyKind(kind);
-    setOcrModal({ machineId, machineLabel: `${machineLabel} · foto de ${kindLabel}`, status: 'loading', rows: [] });
-
-    try {
-      const readings = await readPanelPhoto(canvas);
-      const readingByNum = {};
-      readings.forEach((r) => { readingByNum[r.num] = r; });
-      const rows = buildRowsForMachine(found.machine, readingByNum);
-      setOcrModal({ machineId, machineLabel, status: 'review', rows });
-    } catch (err) {
-      setOcrModal({ machineId, machineLabel, status: 'error', rows: [], error: err.message });
-    } finally {
-      setPhotoBusyMachineId(null);
-      setPhotoBusyKind(null);
-    }
-  }
-
-  // "Adicionar manualmente": mesma tela de conferência, mas sem nenhuma
-  // leitura de foto — todos os campos começam em branco pra digitar.
-  function openManualEntry(machineId) {
-    const found = findMachine(cells, machineId);
-    if (!found) return;
-    const machineLabel = `${found.cell.name} · ${found.machine.name}`;
-    const rows = buildRowsForMachine(found.machine, {});
-    setOcrModal({ machineId, machineLabel, status: 'review', rows });
-  }
-
-  function saveOcrRows(rows) {
-    const machineId = ocrModal?.machineId;
-    const byToolId = {};
-    rows.forEach((r) => { byToolId[r.toolId] = r; });
-    persist((prev) => prev.map((c) => ({
-      ...c,
-      machines: c.machines.map((m) => {
-        const updatedOperations = m.operations.map((o) => ({
-          ...o,
-          tools: o.tools.map((t) => {
-            const row = byToolId[t.id];
-            if (!row) return t;
-            const patch = {};
-            const va = parseFloat(row.newVidaAtual);
-            if (row.newVidaAtual !== '' && !isNaN(va)) patch.vidaAtual = va;
-            if (!t.isRoutine) {
-              const vu = parseFloat(row.newVidaUtil);
-              if (row.newVidaUtil !== '' && !isNaN(vu)) patch.vidaUtil = vu;
-            }
-            if (Object.keys(patch).length === 0) return t;
-            return { ...t, ...patch, lastUpdated: new Date().toISOString() };
-          }),
-        }));
-
-        if (m.id !== machineId) return { ...m, operations: updatedOperations };
-
-        // Se essa máquina está esperando uma leitura fresca pra virar o
-        // início ou o fim da calibração, captura agora — os valores já
-        // saem certos de updatedOperations, direto dessa leitura (foto
-        // ou manual), sem depender do que o contador de peças acumulou.
-        let nextCalibration = m.calibration;
-        if (m.calibration?.phase === 'awaiting_start' || m.calibration?.phase === 'awaiting_finish') {
-          const captured = {};
-          updatedOperations.forEach((o) => o.tools.forEach((t) => {
-            if (!t.isRoutine) captured[t.id] = parseFloat(t.vidaAtual) || 0;
           }));
-          nextCalibration = m.calibration.phase === 'awaiting_start'
-            ? { ...m.calibration, phase: 'running', snapshot: captured }
-            : { ...m.calibration, phase: 'ready', finish: captured };
-        }
+          if (m.id !== machineId) return { ...m, operations: ops };
+          let cal = m.calibration;
+          if (cal?.phase === 'awaiting_start' || cal?.phase === 'awaiting_finish') {
+            const captured = {};
+            ops.forEach((o) => o.tools.forEach((t) => { if (!t.isRoutine) captured[t.id] = parseFloat(t.vidaAtual) || 0; }));
+            cal = cal.phase === 'awaiting_start' ? { ...cal, phase: 'running', snapshot: captured } : { ...cal, phase: 'ready', finish: captured };
+          }
+          return { ...m, operations: ops, calibration: cal };
+        }),
+      })));
+      if (willBeReady) nav.replaceTop({ type: 'calibration', machineId }); else nav.close();
+    },
 
-        return { ...m, operations: updatedOperations, calibration: nextCalibration };
-      }),
-    })));
-    setOcrModal(null);
+    // Anotações ficam dentro da célula (entram no backup automaticamente).
+    saveNote(oldCellId, newCellId, note) {
+      persist((p) => p.map((c) => {
+        let notes = c.notes || [];
+        if (c.id === oldCellId && oldCellId !== newCellId) notes = notes.filter((n) => n.id !== note.id);
+        if (c.id === newCellId) notes = notes.some((n) => n.id === note.id) ? notes.map((n) => (n.id === note.id ? note : n)) : [...notes, note];
+        return { ...c, notes };
+      }));
+    },
+    deleteNote(cellId, noteId) { persist((p) => updateCellById(p, cellId, (c) => ({ ...c, notes: (c.notes || []).filter((n) => n.id !== noteId) }))); },
+
+    exportBackup() { exportBackup(cells); },
+    readBackup(file) { return importBackup(file); },
+    applyBackup(imported) { persist(() => imported); nav.reset(); },
+  };
+
+  const ctx = { cells, act, nav };
+
+  /* ------------------------------------------------------------------ */
+  /* O que mostrar                                                      */
+  /* ------------------------------------------------------------------ */
+  const top = stack[stack.length - 1] || null;
+  let page = null;
+  for (let i = stack.length - 1; i >= 0; i--) if (PAGE_TYPES.includes(stack[i].type)) { page = stack[i]; break; }
+  const overlay = top && !PAGE_TYPES.includes(top.type) ? top : null;
+
+  let base;
+  if (page?.type === 'cell') base = <CellScreen key={page.cellId} cellId={page.cellId} />;
+  else if (page?.type === 'cellNotes') base = <NotesScreen key={`n${page.cellId}`} lockedCellId={page.cellId} />;
+  else if (tab === 'celulas') base = <CellsScreen />;
+  else if (tab === 'notas') base = <NotesScreen />;
+  else if (tab === 'ajustes') base = <SettingsScreen />;
+  else base = <HomeScreen />;
+
+  let sheet = null;
+  if (overlay) {
+    const o = overlay;
+    const k = JSON.stringify({ t: o.type, a: o.opId, b: o.toolId, c: o.cellId, d: o.noteId, e: o.machineId });
+    switch (o.type) {
+      case 'tool': sheet = <ToolSheet key={k} opId={o.opId} toolId={o.toolId} />; break;
+      case 'photo': sheet = <PhotoSheet key={k} machineId={o.machineId} kind={o.kind} />; break;
+      case 'production': sheet = <ProductionSheet key={k} machineId={o.machineId} />; break;
+      case 'calibration': sheet = <CalibrationSheet key={k} machineId={o.machineId} />; break;
+      case 'note': sheet = <NoteSheet key={k} cellId={o.cellId} noteId={o.noteId} presetSlots={o.presetSlots} />; break;
+      case 'addCell': sheet = <AddCellSheet key={k} />; break;
+      case 'addMachine': sheet = <AddMachineSheet key={k} cellId={o.cellId} />; break;
+      case 'addOp': sheet = <AddOperationSheet key={k} machineId={o.machineId} />; break;
+      case 'addTool': sheet = <AddToolSheet key={k} opId={o.opId} />; break;
+      case 'editOp': sheet = <EditOperationSheet key={k} opId={o.opId} />; break;
+      case 'crop':
+        sheet = <CropModal file={o.file} title={o.kind === 'util' ? 'Vida útil (#800–849)' : 'Vida atual (#900–949)'} onConfirm={act.processCrop} onCancel={nav.close} />;
+        break;
+      case 'ocr':
+        sheet = (
+          <OcrReviewSheet state={o} onClose={nav.close} onSave={(rows) => act.saveOcrRows(o.machineId, rows)}
+            onRetake={() => nav.replaceTop({ type: 'photo', machineId: o.machineId, kind: o.kind || 'atual' })} />
+        );
+        break;
+      default: sheet = null;
+    }
   }
 
-  function retakePhoto() {
-    // Fecha e deixa o usuário tocar de novo no botão de câmera/galeria
-    // que quiser — como agora são 4 gatilhos possíveis (útil/atual x
-    // câmera/galeria), não dá pra "adivinhar" qual repetir sozinho.
-    setOcrModal(null);
-  }
+  const showNav = !page;
+  const noteCount = cells.reduce((n, c) => n + (c.notes || []).length, 0);
 
   return (
-    <EditLockContext.Provider value={{ unlocked: editUnlocked }}>
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: SANS, color: C.text }}>
-      <div style={{
-        maxWidth: 480, margin: '0 auto',
-        padding: 'calc(18px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(90px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))',
-      }}>
-        {!selectedCell && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 8, background: C.brandNavy, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Wrench size={17} color="#fff" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>Toolpy</div>
-              <div style={{ fontSize: 10.5, color: C.textFaint }}>Vida de ferramentas</div>
-            </div>
-            <IconBtn title="Exportar backup" onClick={handleExport}><Download size={16} color={C.textDim} /></IconBtn>
-            <IconBtn title="Importar backup" onClick={() => importInputRef.current?.click()}><Upload size={16} color={C.textDim} /></IconBtn>
-            <input ref={importInputRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={handleImportFile} />
-            <button
-              onClick={() => setEditUnlocked((u) => !u)}
-              title={editUnlocked ? 'Travar edição' : 'Destravar edição'}
-              className="flex items-center gap-1.5"
-              style={{
-                background: editUnlocked ? C.warnSoft : 'transparent', color: editUnlocked ? C.warn : C.textFaint,
-                border: `1px solid ${editUnlocked ? C.warn : C.border}`, borderRadius: 7, padding: '6px 10px', fontSize: 11.5, cursor: 'pointer',
-              }}
-            >
-              {editUnlocked ? <Unlock size={13} /> : <Lock size={13} />}
-              {editUnlocked ? 'Destravado' : 'Travado'}
-            </button>
-          </div>
+    <AppCtx.Provider value={ctx}>
+      <div style={{ minHeight: '100vh', background: C.bg, fontFamily: SANS, color: C.text }}>
+        <div style={{ maxWidth: 520, margin: '0 auto', paddingBottom: showNav ? 'calc(110px + env(safe-area-inset-bottom))' : 'calc(40px + env(safe-area-inset-bottom))' }}>
+          {base}
+        </div>
+        {showNav && (
+          <BottomNav tab={tab} noteCount={noteCount}
+            onTab={(t) => { setTab(t); window.scrollTo(0, 0); }}
+            onPhoto={() => nav.push({ type: 'photo' })} />
         )}
-
-        {importError && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', background: C.critSoft, border: `1px solid ${C.crit}`, borderRadius: 8, marginBottom: 12 }}>
-            <AlertTriangle size={15} color={C.crit} />
-            <span style={{ fontSize: 12.5, color: C.text, flex: 1 }}>{importError}</span>
-            <IconBtn onClick={() => setImportError('')}><X size={14} /></IconBtn>
-          </div>
-        )}
-
-        {pendingImport && (
-          <div style={{ padding: '11px 12px', background: C.warnSoft, border: `1px solid ${C.warn}`, borderRadius: 8, marginBottom: 12 }}>
-            <div style={{ fontSize: 12.5, color: C.text, marginBottom: 8 }}>
-              Importar vai <strong>substituir tudo</strong> que está cadastrado agora ({pendingImport.length} {pendingImport.length === 1 ? 'célula' : 'células'} no arquivo). Isso não tem volta — exporte um backup do estado atual antes, se quiser guardar.
-            </div>
-            <div className="flex gap-2">
-              <button onClick={confirmImport} style={{ flex: 1, background: C.warn, color: '#1a1207', border: 'none', borderRadius: 6, padding: '8px 0', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
-                Substituir e importar
-              </button>
-              <button onClick={() => setPendingImport(null)} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 12px', fontSize: 12.5, cursor: 'pointer' }}>
-                Cancelar
-              </button>
-            </div>
-          </div>
-        )}
-
-        {selectedCell ? (
-          <CellDetail
-            cell={selectedCell}
-            onBack={() => window.history.back()}
-            editUnlocked={editUnlocked}
-            onToggleLock={() => setEditUnlocked((u) => !u)}
-            onRename={(name) => renameCell(selectedCell.id, name)}
-            onDelete={() => { deleteCell(selectedCell.id); setExpandedCellId(null); }}
-            otherMachines={flattenMachines(cells)}
-            onAddMachine={(machine) => addMachine(selectedCell.id, machine)}
-            expandedMachineId={expandedMachineId}
-            onToggleMachine={toggleMachine}
-            onRenameMachine={renameMachine}
-            onDeleteMachine={(machineId) => deleteMachine(selectedCell.id, machineId)}
-            expandedOpId={expandedOpId}
-            onToggleOp={toggleOp}
-            onAddOperation={addOperation}
-            onUpdateTool={updateTool}
-            onDeleteTool={deleteTool}
-            onAddTool={addTool}
-            onDeleteOp={deleteOperation}
-            onRenameOp={renameOperation}
-            onPhotoFile={onPhotoFile}
-            photoBusyMachineId={photoBusyMachineId}
-            photoBusyKind={photoBusyKind}
-            onManualEntry={openManualEntry}
-            onAddProduction={addPalletProduction}
-            onUndoProduction={undoPalletProduction}
-            onSetBlockPreset={setBlockPreset}
-            onStartCalibration={startCalibration}
-            onSetCalibrationPhase={setCalibrationPhase}
-            onCancelCalibration={cancelCalibration}
-            onFinishCalibration={finishCalibration}
-          />
-        ) : (
-          <>
-            <SummaryStrip cells={cells} />
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 12, color: C.textDim }}>Células</span>
-            </div>
-
-            {!addingCell && editUnlocked && (
-              <button
-                onClick={() => setAddingCell(true)}
-                className="flex items-center gap-2"
-                style={{ width: '100%', background: 'transparent', border: `1px dashed ${C.borderLight}`, color: C.textDim, borderRadius: 10, padding: '11px 14px', fontSize: 13.5, marginBottom: 14, cursor: 'pointer' }}
-              >
-                <Plus size={16} /> Cadastrar nova célula
-              </button>
-            )}
-
-            {addingCell && <AddCellPanel onSave={addCell} onCancel={() => setAddingCell(false)} />}
-
-            {cells.length === 0 && !addingCell && (
-              <div style={{ textAlign: 'center', color: C.textFaint, fontSize: 12.5, padding: '20px 10px' }}>
-                {editUnlocked
-                  ? 'Nenhuma célula cadastrada. Comece pela célula que você acompanha todo dia — dentro dela você cadastra as máquinas.'
-                  : 'Nenhuma célula cadastrada. Destrave o cadeado acima para cadastrar.'}
-              </div>
-            )}
-
-            <ReorderableCellList cells={cells} onOpen={openCell} onReorder={reorderCells} unlocked={editUnlocked} />
-          </>
-        )}
+        {sheet}
       </div>
-
-      {pendingCrop && (
-        <CropModal
-          file={pendingCrop.file}
-          title={pendingCrop.kind === 'util' ? 'Vida útil (#800-849)' : 'Vida atual (#900-949)'}
-          onConfirm={processCroppedPhoto}
-          onCancel={cancelCrop}
-        />
-      )}
-
-      {ocrModal && <OcrModal state={ocrModal} onClose={() => setOcrModal(null)} onRetake={retakePhoto} onSave={saveOcrRows} />}
-    </div>
-    </EditLockContext.Provider>
+    </AppCtx.Provider>
   );
 }
