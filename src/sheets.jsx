@@ -274,8 +274,9 @@ export function PhotoSheet({ machineId: initialMachine, kind: initialKind }) {
           </Button>
           <Button variant="secondary" onClick={() => setFound(null)}>Tirar outra foto</Button>
         </>}>
-        <div style={{ fontSize: 15, color: C.muted }}>Confira os códigos lidos. As já cadastradas nessa operação ficam de fora.</div>
+        <div style={{ fontSize: 15, color: C.muted }}>Confira os códigos lidos — dá pra corrigir tocando no código. Borda laranja = código com formato diferente do normal (ex: faltou dígito).</div>
         <ProgramFoundList found={found} existingSlots={existing}
+          onEdit={(slot, bman) => setFound((p) => p.map((f) => (f.slot === slot ? { ...f, bman } : f)))}
           selected={selected} onToggle={(s) => setSelected((p) => { const n = new Set(p); if (n.has(s)) n.delete(s); else n.add(s); return n; })} />
       </Sheet>
     );

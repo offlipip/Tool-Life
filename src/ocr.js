@@ -1,5 +1,6 @@
 import { createWorker } from 'tesseract.js';
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { parseToolPairs } from './programParse.js';
 
 // Ponte pro ML Kit do Google (grátis, on-device) — só existe quando o
 // app roda dentro do apk Android nativo (ver MlKitOcrPlugin.java). No
@@ -329,11 +330,25 @@ function parseProgramLines(text) {
   return results;
 }
 
+// Junta: leitura linha a linha (a que já funcionava na tela do programa)
+// primeiro, e o pareamento por posição (tabela "N." / "Cod. fer.") pra
+// completar os T que faltaram.
+function combineProgram(words, text) {
+  const seen = new Set();
+  const out = [];
+  [...parseProgramLines(text), ...parseToolPairs(words, text)].forEach((r) => {
+    if (seen.has(r.slot)) return;
+    seen.add(r.slot);
+    out.push(r);
+  });
+  return out;
+}
+
 export async function readProgramPhoto(input) {
   if (hasMlKit()) {
     try {
-      const { fullText } = await recognizeWithMlKit(input);
-      const results = parseProgramLines(fullText);
+      const { fullText, words } = await recognizeWithMlKit(input);
+      const results = combineProgram(words, fullText);
       if (results.length > 0) return results;
     } catch {
       // ML Kit falhou por algum motivo (raro) — cai pro Tesseract abaixo.
@@ -342,5 +357,6 @@ export async function readProgramPhoto(input) {
   const canvas = await preprocess(input, 2000);
   const worker = await getTextWorker();
   const { data } = await worker.recognize(canvas);
-  return parseProgramLines(data.text || '');
+  const words = (data.words || []).map((w) => ({ text: w.text, bbox: w.bbox }));
+  return combineProgram(words, data.text || '');
 }

@@ -323,18 +323,26 @@ export function NewToolForm({ onAdd, limiteReadings, blockPreset, hideProgramPho
 }
 
 /* Lista de T/BMAN lidos do programa, pra marcar quais cadastrar. */
-export function ProgramFoundList({ found, existingSlots, selected, onToggle }) {
+export function ProgramFoundList({ found, existingSlots, selected, onToggle, onEdit }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {found.map((f) => {
         const exists = existingSlots.has(f.slot);
+        const on = !exists && selected.has(f.slot);
         return (
-          <label key={f.slot} style={{ display: 'flex', alignItems: 'center', gap: 12, minHeight: 52, borderBottom: `1px solid ${C.divider}`, cursor: exists ? 'default' : 'pointer', opacity: exists ? 0.6 : 1 }}>
-            <input type="checkbox" disabled={exists} checked={!exists && selected.has(f.slot)} onChange={() => onToggle(f.slot)} style={{ width: 22, height: 22, accentColor: C.navy }} />
-            <span style={{ fontFamily: MONO, fontSize: 17, fontWeight: 600, width: 50 }}>{f.slot}</span>
-            <span style={{ fontFamily: MONO, fontSize: 15, color: C.muted, flex: 1 }}>{f.bman}</span>
-            {exists && <Badge tone="muted">já cadastrada</Badge>}
-          </label>
+          <div key={f.slot} style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 58, borderBottom: `1px solid ${C.divider}`, opacity: exists ? 0.6 : 1 }}>
+            <input type="checkbox" aria-label={`Cadastrar ${f.slot}`} disabled={exists} checked={on} onChange={() => onToggle(f.slot)} style={{ width: 24, height: 24, accentColor: C.navy, flexShrink: 0 }} />
+            <span style={{ fontFamily: MONO, fontSize: 17, fontWeight: 600, width: 46, flexShrink: 0 }}>{f.slot}</span>
+            {exists ? (
+              <>
+                <span style={{ fontFamily: MONO, fontSize: 15, color: C.muted, flex: 1 }}>{f.bman}</span>
+                <Badge tone="muted">já cadastrada</Badge>
+              </>
+            ) : (
+              <TextInput mono value={f.bman} aria-label={`Código da ${f.slot}`} onChange={(e) => onEdit?.(f.slot, e.target.value.toUpperCase())}
+                style={{ flex: 1, height: 44, fontSize: 15.5, borderColor: /^[A-Z]{3,6}-\d{4}$/.test(f.bman) ? C.borderStrong : C.warn }} />
+            )}
+          </div>
         );
       })}
     </div>
