@@ -7,6 +7,7 @@ import {
 import { C, MONO, SANS, STATUS, SAFE_TOP, SAFE_BOTTOM } from './theme.js';
 import { TopBar, IconButton, Button, Chip, ChipRow, Card, SectionTitle, Badge, LifeBar, EmptyState, Notice, TextInput } from './ui.jsx';
 import { useApp } from './actions.js';
+import { isNativeWithoutShare } from './storage.js';
 import {
   flattenToolRows, computeRemaining, statusFor, lifePct, compareSlots, notesForSlot, WARNING_MAX, timeAgo,
 } from './logic.js';
@@ -532,17 +533,47 @@ export function NotesScreen({ lockedCellId }) {
 export function SettingsScreen() {
   const { cells, act } = useApp();
   const inputRef = useRef(null);
+  const textRef = useRef(null);
   const [pending, setPending] = useState(null);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
+  const [showText, setShowText] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [paste, setPaste] = useState('');
   const toolCount = flattenToolRows(cells).length;
+  const noteCount = cells.reduce((n, c) => n + (c.notes || []).length, 0);
 
+  async function onExport() {
+    setError(''); setDone('');
+    // apk antigo (sem o plugin de compartilhar): baixar não funciona lá
+    // dentro, então já mostra o backup como texto pra copiar.
+    if (isNativeWithoutShare()) { setShowText(true); return; }
+    try {
+      const r = await act.exportBackup();
+      setDone(r === 'shared' ? 'Escolha onde salvar (WhatsApp, Drive, Arquivos…).' : 'Backup baixado (pasta Downloads).');
+    } catch (e) {
+      if (!/cancel/i.test(String(e?.message || e))) { setError('Não consegui exportar o arquivo. Use "Copiar como texto".'); setShowText(true); }
+    }
+  }
+  async function copyText() {
+    const text = act.backupText();
+    try { await navigator.clipboard.writeText(text); setDone('Backup copiado! Cole num lugar seguro (WhatsApp pra você mesmo, Notas…).'); }
+    catch {
+      textRef.current?.select();
+      try { document.execCommand('copy'); setDone('Backup copiado! Cole num lugar seguro.'); }
+      catch { setDone('Segure o texto abaixo → Selecionar tudo → Copiar.'); }
+    }
+  }
   async function onFile(e) {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
     setError(''); setDone('');
     try { setPending(await act.readBackup(f)); } catch { setError('Esse arquivo não parece um backup do Toolpy.'); }
+  }
+  function onPasteImport() {
+    setError(''); setDone('');
+    try { setPending(act.readBackupText(paste)); setShowPaste(false); setPaste(''); } catch { setError('Esse texto não parece um backup do Toolpy — confira se colou ele inteiro.'); }
   }
 
   return (
@@ -552,11 +583,25 @@ export function SettingsScreen() {
         <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Backup</div>
           <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.45 }}>
-            Seus dados ficam só neste aparelho ({cells.length} {cells.length === 1 ? 'célula' : 'células'}, {toolCount} ferramentas). Exporte um backup de vez em quando — e é assim que você passa os dados do site pro app instalado.
+            Seus dados ficam só neste aparelho ({cells.length} {cells.length === 1 ? 'célula' : 'células'}, {toolCount} ferramentas, {noteCount} {noteCount === 1 ? 'anotação' : 'anotações'}). <b style={{ color: C.text }}>Desinstalar o app ou limpar os dados apaga tudo</b> — exporte antes e guarde o arquivo fora do celular.
           </div>
-          <Button icon={<Download size={20} />} onClick={() => { act.exportBackup(); setDone('Backup exportado.'); }}>Exportar backup</Button>
-          <input ref={inputRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onFile} />
-          <Button variant="secondary" icon={<Upload size={20} />} onClick={() => inputRef.current?.click()}>Importar backup</Button>
+          <Button icon={<Download size={20} />} onClick={onExport}>Exportar backup</Button>
+          <Button variant="soft" icon={<Copy size={20} />} onClick={() => { setShowText(true); copyText(); }}>Copiar backup como texto</Button>
+          {showText && (
+            <textarea ref={textRef} readOnly value={act.backupText()} onFocus={(e) => e.target.select()}
+              style={{ width: '100%', height: 140, borderRadius: 12, border: `1.5px solid ${C.borderStrong}`, padding: 10, fontFamily: MONO, fontSize: 12, color: C.text, background: C.bg }} />
+          )}
+          <div style={{ height: 1, background: C.divider, margin: '4px 0' }} />
+          <input ref={inputRef} type="file" accept="application/json,.json,text/plain,*/*" style={{ display: 'none' }} onChange={onFile} />
+          <Button variant="secondary" icon={<Upload size={20} />} onClick={() => inputRef.current?.click()}>Importar arquivo de backup</Button>
+          <Button variant="secondary" icon={<Upload size={20} />} onClick={() => setShowPaste((v) => !v)}>Importar colando o texto</Button>
+          {showPaste && (
+            <>
+              <textarea value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="Cole aqui o texto do backup (começa com { )"
+                style={{ width: '100%', height: 140, borderRadius: 12, border: `1.5px solid ${C.borderStrong}`, padding: 10, fontFamily: MONO, fontSize: 12, color: C.text, background: C.surface }} />
+              <Button disabled={!paste.trim()} onClick={onPasteImport}>Ler backup colado</Button>
+            </>
+          )}
           {done && <div style={{ fontSize: 14.5, color: C.okText }}>✓ {done}</div>}
           {error && <Notice tone="crit" icon={<AlertTriangle size={20} />}>{error}</Notice>}
           {pending && (
@@ -565,7 +610,7 @@ export function SettingsScreen() {
                 <Button variant="secondary" size="sm" onClick={() => setPending(null)}>Cancelar</Button>
                 <Button variant="warn" size="sm" onClick={() => { act.applyBackup(pending); setPending(null); setDone('Backup importado.'); }}>Substituir tudo</Button>
               </div>}>
-              Importar vai <b>substituir tudo</b> que está aqui agora pelo arquivo ({pending.length} {pending.length === 1 ? 'célula' : 'células'}). Não tem volta.
+              Importar vai <b>substituir tudo</b> que está aqui agora pelo backup ({pending.length} {pending.length === 1 ? 'célula' : 'células'}). Não tem volta.
             </Notice>
           )}
         </Card>

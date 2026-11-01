@@ -83,27 +83,56 @@ export function saveData(cells) {
   }
 }
 
-/** Baixa um arquivo .json com tudo que está cadastrado. */
-export function exportBackup(cells) {
-  const payload = { exportedAt: new Date().toISOString(), cells };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
+import { Capacitor } from '@capacitor/core';
+
+export function backupText(cells) {
+  return JSON.stringify({ exportedAt: new Date().toISOString(), cells }, null, 2);
+}
+function backupName() {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  return `toolpy-backup-${stamp}.json`;
+}
+
+// No apk, "baixar" arquivo não funciona dentro do app. Com os plugins de
+// arquivo + compartilhar (apk 1.5+), abre o menu de compartilhar do
+// Android (WhatsApp, Drive, Arquivos...). Em apk mais antigo não dá.
+export function canShareNative() {
+  return Capacitor.isNativePlatform() && Capacitor.isPluginAvailable('Filesystem') && Capacitor.isPluginAvailable('Share');
+}
+export function isNativeWithoutShare() {
+  return Capacitor.isNativePlatform() && !canShareNative();
+}
+
+/** Exporta: menu de compartilhar no apk, download no navegador. */
+export async function exportBackup(cells) {
+  const text = backupText(cells);
+  if (canShareNative()) {
+    const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+    const { Share } = await import('@capacitor/share');
+    const r = await Filesystem.writeFile({ path: backupName(), data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+    await Share.share({ title: 'Backup do Toolpy', text: 'Backup do Toolpy', files: [r.uri], dialogTitle: 'Salvar backup em…' });
+    return 'shared';
+  }
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `vida-ferramentas-backup-${stamp}.json`;
+  a.download = backupName();
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return 'downloaded';
 }
 
-/** Lê um arquivo .json exportado antes e devolve as células (já migradas). */
-export async function importBackup(file) {
-  const text = await file.text();
-  const parsed = JSON.parse(text);
+/** Lê o texto de um backup (arquivo ou colado) e devolve as células migradas. */
+export function parseBackupText(text) {
+  const parsed = JSON.parse(String(text).trim());
   const cells = Array.isArray(parsed.cells) ? parsed.cells : (Array.isArray(parsed) ? parsed : null);
-  if (!cells) throw new Error('arquivo não parece um backup válido');
+  if (!cells) throw new Error('não parece um backup válido');
   return migrateCells(cells);
 }
 
+export async function importBackup(file) {
+  return parseBackupText(await file.text());
+}

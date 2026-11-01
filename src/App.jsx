@@ -3,7 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import { C, SANS } from './theme.js';
 import { AppCtx } from './actions.js';
-import { loadData, saveData, exportBackup, importBackup } from './storage.js';
+import { loadData, saveData, exportBackup, importBackup, backupText, parseBackupText } from './storage.js';
 import { readPanelPhoto } from './ocr.js';
 import {
   updateCellById, updateMachineById, updateOperationById, updateToolById, getToolDesgaste, findMachine, buildRowsForMachine, planCopy,
@@ -277,8 +277,10 @@ export default function App() {
     },
     deleteNote(cellId, noteId) { persist((p) => updateCellById(p, cellId, (c) => ({ ...c, notes: (c.notes || []).filter((n) => n.id !== noteId) }))); },
 
-    exportBackup() { exportBackup(cells); },
+    exportBackup() { return exportBackup(cells); },
+    backupText() { return backupText(cells); },
     readBackup(file) { return importBackup(file); },
+    readBackupText(text) { return parseBackupText(text); },
     applyBackup(imported) { persist(() => imported); nav.reset(); },
   };
 
