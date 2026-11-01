@@ -1,4 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import { C, SANS } from './theme.js';
 import { AppCtx } from './actions.js';
 import { loadData, saveData, exportBackup, importBackup } from './storage.js';
@@ -34,11 +36,41 @@ export default function App() {
   /* Navegação: cada tela/folha aberta vira uma entrada no histórico, aí */
   /* o botão voltar do Android fecha a de cima em vez de sair do app.    */
   /* ------------------------------------------------------------------ */
+  // Abas: sair do Início pra outra aba cria UMA entrada no histórico; o
+  // voltar então leva de volta pro Início antes de sair do app.
+  const tabEntryRef = useRef(false);
   React.useEffect(() => {
-    function onPop() { setStack((s) => s.slice(0, -1)); }
+    function onPop() {
+      if (stackRef.current.length) { setStack((s) => s.slice(0, -1)); return; }
+      if (tabEntryRef.current) { tabEntryRef.current = false; setTab('inicio'); window.scrollTo(0, 0); }
+    }
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // No apk: o botão voltar do Android vem pra cá em vez de fechar o app.
+  // Se ainda tem algo pra voltar (folha, tela, aba), volta; no Início,
+  // só manda o app pro segundo plano (não fecha nem perde nada).
+  React.useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined;
+    let handle;
+    CapApp.addListener('backButton', () => {
+      if (stackRef.current.length || tabEntryRef.current) window.history.back();
+      else CapApp.minimizeApp();
+    }).then((h) => { handle = h; });
+    return () => { handle?.remove(); };
+  }, []);
+
+  function changeTab(t) {
+    window.scrollTo(0, 0);
+    if (t === tab) return;
+    if (t === 'inicio') {
+      if (tabEntryRef.current) window.history.back(); else setTab('inicio');
+      return;
+    }
+    if (!tabEntryRef.current) { window.history.pushState({ toolpy: 'tab' }, ''); tabEntryRef.current = true; }
+    setTab(t);
+  }
   const nav = {
     push(item) { window.history.pushState({ toolpy: true }, ''); setStack((s) => [...s, item]); },
     close() { if (stackRef.current.length) window.history.back(); },
@@ -308,7 +340,7 @@ export default function App() {
         </div>
         {showNav && (
           <BottomNav tab={tab} noteCount={noteCount}
-            onTab={(t) => { setTab(t); window.scrollTo(0, 0); }}
+            onTab={changeTab}
             onPhoto={() => nav.push({ type: 'photo' })} />
         )}
         {sheet}
