@@ -16,7 +16,24 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Assinatura fixa (chave guardada nos segredos do GitHub). Sem ela,
+    // cada build sai com uma assinatura diferente e o Android não deixa
+    // instalar por cima da versão anterior.
+    def toolpyKeystore = System.getenv('TOOLPY_KEYSTORE_FILE')
+    signingConfigs {
+        if (toolpyKeystore) {
+            toolpy {
+                storeFile file(toolpyKeystore)
+                storePassword System.getenv('TOOLPY_KEYSTORE_PASSWORD')
+                keyAlias 'toolpy'
+                keyPassword System.getenv('TOOLPY_KEYSTORE_PASSWORD')
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (toolpyKeystore) signingConfig signingConfigs.toolpy
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

@@ -74,8 +74,21 @@ jobs:
           tail -n 25 cap-sync.log | while IFS= read -r line; do echo "::error::$line"; done
           exit 1
 
+      - name: Preparar assinatura fixa
+        env:
+          KS_B64: ${{ secrets.TOOLPY_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            echo "::warning::Segredo TOOLPY_KEYSTORE_B64 não configurado — o APK sai com assinatura aleatória e não instala por cima do anterior."
+          else
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/toolpy.jks"
+            echo "TOOLPY_KEYSTORE_FILE=$RUNNER_TEMP/toolpy.jks" >> "$GITHUB_ENV"
+          fi
+
       - name: Compilar APK de depuração
         working-directory: android
+        env:
+          TOOLPY_KEYSTORE_PASSWORD: ${{ secrets.TOOLPY_KEYSTORE_PASSWORD }}
         run: ./gradlew assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
