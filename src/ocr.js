@@ -1,6 +1,6 @@
 import { createWorker } from 'tesseract.js';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { parseToolPairs } from './programParse.js';
+import { parseToolPairs, mergeBySlot } from './programParse.js';
 
 // Ponte pro ML Kit do Google (grátis, on-device) — só existe quando o
 // app roda dentro do apk Android nativo (ver MlKitOcrPlugin.java). No
@@ -334,14 +334,7 @@ function parseProgramLines(text) {
 // primeiro, e o pareamento por posição (tabela "N." / "Cod. fer.") pra
 // completar os T que faltaram.
 function combineProgram(words, text) {
-  const seen = new Set();
-  const out = [];
-  [...parseProgramLines(text), ...parseToolPairs(words, text)].forEach((r) => {
-    if (seen.has(r.slot)) return;
-    seen.add(r.slot);
-    out.push(r);
-  });
-  return out;
+  return mergeBySlot(parseProgramLines(text), parseToolPairs(words, text));
 }
 
 export async function readProgramPhoto(input) {

@@ -130,31 +130,43 @@ export function pairByPosition(words) {
     usedS.add(si); usedC.add(ci);
     out.push({ slot: slots[si].slot, bman: codes[ci].code, y: slots[si].b.yc });
   });
+  // T sem código ao lado (ferramenta que não tem BMAN, ou código que o
+  // OCR não leu): entra mesmo assim, com o código em branco pra conferir
+  slots.forEach((s, si) => { if (!usedS.has(si)) out.push({ slot: s.slot, bman: '', y: s.b.yc }); });
   out.sort((a, b) => a.y - b.y);
   return out.map(({ slot, bman }) => ({ slot, bman }));
+}
+
+/** Junta listas de {slot,bman}: um por slot, preferindo o que tem código. */
+export function mergeBySlot(...lists) {
+  const map = new Map();
+  lists.flat().forEach((r) => {
+    if (!r || !r.slot) return;
+    const cur = map.get(r.slot);
+    if (!cur) map.set(r.slot, { ...r, bman: r.bman || '' });
+    else if (!cur.bman && r.bman) map.set(r.slot, { ...r });
+  });
+  return Array.from(map.values());
 }
 
 /** Leitura linha a linha (formato da tela do programa). */
 export function pairByLines(text) {
   const out = [];
   (text || '').split('\n').forEach((line) => {
-    const m = line.toUpperCase().match(/\bT[-\s]?([0-9O]{1,3})\b\D{0,15}?([A-Z8]{3,6}[-\s]?[0-9O]{2,5})/);
-    if (!m) return;
-    const slot = parseSlot(`T${m[1]}`);
-    const bman = parseCode(m[2]);
-    if (slot && bman) out.push({ slot, bman });
+    const up = line.toUpperCase();
+    const m = up.match(/\bT[-\s]?([0-9O]{1,3})\b\D{0,15}?([A-Z8]{3,6}[-\s]?[0-9O]{2,5})/);
+    const slot = m ? parseSlot(`T${m[1]}`) : null;
+    const bman = m ? parseCode(m[2]) : null;
+    if (slot && bman) { out.push({ slot, bman }); return; }
+    // linha com T mas sem código (ex: ferramenta sem BMAN no programa)
+    const t = up.match(/\bT[-\s]?([0-9O]{1,2})\b/);
+    const s2 = t ? parseSlot(`T${t[1]}`) : null;
+    if (s2) out.push({ slot: s2, bman: '' });
   });
   return out;
 }
 
 /** Junta as duas leituras: posição primeiro, linhas completam o que faltou. */
 export function parseToolPairs(words, text) {
-  const seen = new Set();
-  const results = [];
-  [...pairByPosition(words), ...pairByLines(text)].forEach((r) => {
-    if (seen.has(r.slot)) return;
-    seen.add(r.slot);
-    results.push(r);
-  });
-  return results;
+  return mergeBySlot(pairByPosition(words), pairByLines(text));
 }

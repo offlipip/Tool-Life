@@ -239,7 +239,7 @@ export function useProgramReader() {
 }
 
 /* Formulário de UMA ferramenta nova. */
-export function NewToolForm({ onAdd, limiteReadings, blockPreset, hideProgramPhoto }) {
+export function NewToolForm({ onAdd, onAddMany, existingSlots, limiteReadings, blockPreset, hideProgramPhoto }) {
   const presetDesgaste = String(desgasteForPreset(blockPreset));
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: presetDesgaste, isRoutine: false };
   const [t, setT] = useState(blank);
@@ -262,7 +262,19 @@ export function NewToolForm({ onAdd, limiteReadings, blockPreset, hideProgramPho
 
   async function handleProgram(file) {
     const found = await program.read(file);
-    if (found.length) setCandidates(found);
+    const have = existingSlots || new Set();
+    if (found.length) setCandidates(found.filter((f) => !have.has(f.slot)));
+  }
+  // Cadastra de uma vez todas as lidas (vida útil vem da foto #800 se ela
+  // já tiver sido lida; senão fica em branco pra ler depois).
+  function addAll() {
+    const tools = candidates.map((c) => {
+      const num = slotToLimiteNum(c.slot);
+      const vu = limiteReadings && num !== null && limiteReadings[num] ? limiteReadings[num].value : 0;
+      return { id: genId('tool'), slot: c.slot, bman: c.bman || '', isRoutine: false, vidaUtil: vu, vidaAtual: 0, desgastePeca: {}, lastUpdated: null };
+    });
+    onAddMany(tools);
+    setCandidates([]);
   }
   function useCandidate(c) {
     setT((p) => ({ ...p, slot: c.slot, bman: c.bman }));
@@ -289,9 +301,14 @@ export function NewToolForm({ onAdd, limiteReadings, blockPreset, hideProgramPho
           {program.status === 'error' && <div style={{ fontSize: 14, color: C.critText }}>Não reconheci nada nessa foto{program.error ? ` (${program.error})` : ''}.</div>}
           {candidates.length > 0 && (
             <>
-              <div style={{ fontSize: 14, color: C.muted }}>Toque na ferramenta lida pra preencher:</div>
+              {onAddMany && (
+                <Button icon={<Plus size={20} />} onClick={addAll}>
+                  Cadastrar todas as lidas ({candidates.length})
+                </Button>
+              )}
+              <div style={{ fontSize: 14, color: C.muted }}>{onAddMany ? 'Ou toque numa pra preencher o formulário e conferir antes:' : 'Toque na ferramenta lida pra preencher:'}</div>
               <ChipRow wrap>
-                {candidates.map((c) => <Chip key={c.slot} small mono onClick={() => useCandidate(c)}>{c.slot} · {c.bman}</Chip>)}
+                {candidates.map((c) => <Chip key={c.slot} small mono onClick={() => useCandidate(c)}>{c.slot} · {c.bman || 'sem código'}</Chip>)}
               </ChipRow>
             </>
           )}
@@ -339,7 +356,7 @@ export function ProgramFoundList({ found, existingSlots, selected, onToggle, onE
                 <Badge tone="muted">já cadastrada</Badge>
               </>
             ) : (
-              <TextInput mono value={f.bman} aria-label={`Código da ${f.slot}`} onChange={(e) => onEdit?.(f.slot, e.target.value.toUpperCase())}
+              <TextInput mono value={f.bman} placeholder="sem código" aria-label={`Código da ${f.slot}`} onChange={(e) => onEdit?.(f.slot, e.target.value.toUpperCase())}
                 style={{ flex: 1, height: 44, fontSize: 15.5, borderColor: /^[A-Z]{3,6}-\d{4}$/.test(f.bman) ? C.borderStrong : C.warn }} />
             )}
           </div>

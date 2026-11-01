@@ -274,7 +274,7 @@ export function PhotoSheet({ machineId: initialMachine, kind: initialKind }) {
           </Button>
           <Button variant="secondary" onClick={() => setFound(null)}>Tirar outra foto</Button>
         </>}>
-        <div style={{ fontSize: 15, color: C.muted }}>Confira os códigos lidos — dá pra corrigir tocando no código. Borda laranja = código com formato diferente do normal (ex: faltou dígito).</div>
+        <div style={{ fontSize: 15, color: C.muted }}>Confira os códigos lidos — dá pra corrigir tocando no código. Borda laranja = sem código ou formato diferente do normal (ex: faltou dígito). Ferramenta sem BMAN pode ficar em branco.</div>
         <ProgramFoundList found={found} existingSlots={existing}
           onEdit={(slot, bman) => setFound((p) => p.map((f) => (f.slot === slot ? { ...f, bman } : f)))}
           selected={selected} onToggle={(s) => setSelected((p) => { const n = new Set(p); if (n.has(s)) n.delete(s); else n.add(s); return n; })} />
@@ -681,7 +681,9 @@ export function AddToolSheet({ opId }) {
       footer={<Button size="lg" variant={added.length ? 'primary' : 'secondary'} icon={<Check size={22} />} onClick={nav.close}>{added.length ? 'Concluir' : 'Fechar'}</Button>}>
       {added.length > 0 && <Notice tone="navy" icon={<Check size={20} />}>Adicionadas agora: {added.join(', ')}</Notice>}
       <LimitePhotoButton readings={limite} onReady={setLimite} />
-      <NewToolForm limiteReadings={limite} blockPreset={preset} onAdd={(t) => { act.addTool(opId, t); setAdded((p) => [...p, t.slot]); }} />
+      <NewToolForm limiteReadings={limite} blockPreset={preset} existingSlots={new Set(ctx.op.tools.map((t) => t.slot))}
+        onAdd={(t) => { act.addTool(opId, t); setAdded((p) => [...p, t.slot]); }}
+        onAddMany={(list) => { act.addTools(opId, list); setAdded((p) => [...p, ...list.map((t) => t.slot)]); }} />
     </Sheet>
   );
 }
