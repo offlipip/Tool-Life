@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import {
   Wrench, StickyNote, Pencil, Check, Plus, Camera, Factory, ChevronRight, GripVertical, Trash2, Home, LayoutGrid,
   Settings, Download, Upload, SlidersHorizontal, Bell, AlertTriangle, CheckCircle2, Keyboard, Layers,
+  RotateCcw, X, Copy, Heart,
 } from 'lucide-react';
 import { C, MONO, SANS, STATUS, SAFE_TOP, SAFE_BOTTOM } from './theme.js';
 import { TopBar, IconButton, Button, Chip, ChipRow, Card, SectionTitle, Badge, LifeBar, EmptyState, Notice, TextInput } from './ui.jsx';
@@ -10,16 +11,51 @@ import {
   flattenToolRows, computeRemaining, statusFor, lifePct, compareSlots, notesForSlot, WARNING_MAX, timeAgo,
 } from './logic.js';
 
-/* Linha de ferramenta — usada no Início e dentro da célula. */
-function ToolLine({ tool, preset, subtitle, noteCount, onClick, last }) {
+/* Linha de ferramenta — usada no Início e dentro da célula. Com onReset,
+   ganha o botão ↺ de zerar direto na linha (confirma ali mesmo). */
+function ToolLine({ tool, preset, subtitle, noteCount, onClick, last, onReset, reminders = [] }) {
+  const [confirm, setConfirm] = useState(false);
+  const border = last ? 'none' : `1px solid ${C.divider}`;
+  if (confirm) {
+    return (
+      <div style={{ borderBottom: border, background: C.warnTint, padding: '10px 10px 10px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ flex: 1, fontSize: 16, color: C.text }}>
+            Zerar {tool.isRoutine ? 'o contador' : 'a vida'} da <b style={{ fontFamily: MONO }}>{tool.slot}</b>?
+          </span>
+          <IconButton label="Cancelar" onClick={() => setConfirm(false)}><X size={22} /></IconButton>
+          <IconButton label={`Confirmar zerar ${tool.slot}`} active onClick={() => { onReset(); setConfirm(false); }}><Check size={22} /></IconButton>
+        </div>
+        {reminders.map((n) => (
+          <div key={n.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 15, color: C.text, paddingRight: 6 }}>
+            <Bell size={18} color={C.navy} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span><b style={{ color: C.navy }}>Lembrete:</b> {n.text}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const row = <ToolLineButton tool={tool} preset={preset} subtitle={subtitle} noteCount={noteCount} onClick={onClick} border={onReset ? 'none' : border} />;
+  if (!onReset) return row;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', borderBottom: border }}>
+      <div style={{ flex: 1, minWidth: 0 }}>{row}</div>
+      <div style={{ paddingRight: 8 }}>
+        <IconButton label={`Zerar ${tool.slot}`} plain onClick={() => setConfirm(true)}><RotateCcw size={21} color={C.muted} /></IconButton>
+      </div>
+    </div>
+  );
+}
+
+function ToolLineButton({ tool, preset, subtitle, noteCount, onClick, border }) {
   const remaining = computeRemaining(tool, preset);
   const status = statusFor(remaining);
   const S = STATUS[status];
   return (
     <button type="button" onClick={onClick}
       style={{
-        width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderBottom: last ? 'none' : `1px solid ${C.divider}`,
-        padding: '13px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', fontFamily: SANS, color: C.text, minHeight: 64,
+        width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderBottom: border,
+        padding: '13px 8px 13px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', fontFamily: SANS, color: C.text, minHeight: 64,
       }}>
       <span style={{ fontFamily: MONO, fontSize: 18, fontWeight: 600, width: 46, flexShrink: 0 }}>{tool.slot || '?'}</span>
       <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -68,7 +104,7 @@ function CellCard({ cell, onClick }) {
 /* ---------------------------------------------------------------------- */
 
 export function HomeScreen() {
-  const { cells, nav } = useApp();
+  const { cells, act, nav } = useApp();
   const [showAll, setShowAll] = useState(false);
   const rows = flattenToolRows(cells)
     .map((r) => ({ ...r, remaining: computeRemaining(r.tool, r.preset) }))
@@ -120,7 +156,9 @@ export function HomeScreen() {
                       subtitle={`${r.cellName} · ${r.machineName} · ${r.opName}`}
                       noteCount={notesForSlot(cellById[r.cellId], r.tool.slot).length}
                       last={i === visible.length - 1}
-                      onClick={() => nav.push({ type: 'tool', opId: r.opId, toolId: r.tool.id })} />
+                      onClick={() => nav.push({ type: 'tool', opId: r.opId, toolId: r.tool.id })}
+                      onReset={() => act.resetTool(r.opId, r.tool.id)}
+                      reminders={notesForSlot(cellById[r.cellId], r.tool.slot).filter((n) => n.remind)} />
                   ))}
                 </Card>
                 {rows.length > visible.length && (
@@ -378,6 +416,9 @@ export function CellScreen({ cellId }) {
               <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, letterSpacing: '0.04em' }}>MÁQUINA {machine.name}</div>
                 <InlineRename label="Nome da máquina" value={machine.name} onSave={(v) => act.renameMachine(machine.id, v)} />
+                {cells.some((c) => c.machines.some((m) => m.id !== machine.id && m.operations.length > 0)) && (
+                  <Button variant="secondary" size="sm" icon={<Copy size={18} />} onClick={() => nav.push({ type: 'copyFrom', machineId: machine.id })}>Copiar de outra máquina</Button>
+                )}
                 {machine.operations.length > 0 && !machine.calibration && (
                   <Button variant="secondary" size="sm" icon={<SlidersHorizontal size={18} />} onClick={() => act.startCalibration(machine.id)}>Calibrar desgaste (bloco {preset})</Button>
                 )}
@@ -409,7 +450,8 @@ export function CellScreen({ cellId }) {
                     <Card>
                       {tools.map((t, i) => (
                         <ToolLine key={t.id} tool={t} preset={preset} subtitle={t.bman || 'sem código'} last={i === tools.length - 1}
-                          noteCount={notesForSlot(cell, t.slot).length} onClick={() => nav.push({ type: 'tool', opId: op.id, toolId: t.id })} />
+                          noteCount={notesForSlot(cell, t.slot).length} onClick={() => nav.push({ type: 'tool', opId: op.id, toolId: t.id })}
+                          onReset={() => act.resetTool(op.id, t.id)} reminders={notesForSlot(cell, t.slot).filter((n) => n.remind)} />
                       ))}
                     </Card>
                   ) : !editing && (
@@ -527,9 +569,28 @@ export function SettingsScreen() {
             </Notice>
           )}
         </Card>
-        <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>Sobre</div>
-          <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.45 }}>Toolpy · vida de ferramentas. A leitura de foto roda no próprio aparelho, sem internet depois da primeira vez.</div>
+        <Card style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: C.navy, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Wrench size={22} color="#fff" strokeWidth={2.4} />
+            </div>
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 700 }}>Sobre o Toolpy</div>
+              <div style={{ fontSize: 13.5, color: C.muted }}>ferramenta + Tupy</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 16, lineHeight: 1.55, color: C.text }}>
+            O Toolpy nasceu no chão de fábrica, de um operador pra outros operadores. A ideia é simples: <b>facilitar a vida de quem está na máquina</b>.
+          </div>
+          <div style={{ fontSize: 16, lineHeight: 1.55, color: C.text }}>
+            Em vez de ficar conferindo número por número no painel, você tira uma foto e o app mostra na hora quais ferramentas estão perto de trocar, quanto ainda falta e o que não pode ser esquecido na troca.
+          </div>
+          <div style={{ fontSize: 16, lineHeight: 1.55, color: C.text }}>
+            Menos tempo procurando, menos susto com ferramenta quebrada, mais tranquilidade no turno.
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 14, color: C.muted, borderTop: `1px solid ${C.divider}`, paddingTop: 12 }}>
+            <Heart size={16} color={C.navy} /> Feito por quem usa. A leitura de foto roda no próprio aparelho.
+          </div>
         </Card>
       </div>
     </>

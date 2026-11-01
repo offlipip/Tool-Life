@@ -4,12 +4,12 @@ import { AppCtx } from './actions.js';
 import { loadData, saveData, exportBackup, importBackup } from './storage.js';
 import { readPanelPhoto } from './ocr.js';
 import {
-  updateCellById, updateMachineById, updateOperationById, updateToolById, getToolDesgaste, findMachine, buildRowsForMachine,
+  updateCellById, updateMachineById, updateOperationById, updateToolById, getToolDesgaste, findMachine, buildRowsForMachine, planCopy,
 } from './logic.js';
 import { HomeScreen, CellsScreen, CellScreen, NotesScreen, SettingsScreen, BottomNav } from './screens.jsx';
 import {
   ToolSheet, PhotoSheet, ProductionSheet, CalibrationSheet, NoteSheet, AddCellSheet, AddMachineSheet,
-  AddOperationSheet, AddToolSheet, EditOperationSheet,
+  AddOperationSheet, AddToolSheet, EditOperationSheet, CopyFromSheet,
 } from './sheets.jsx';
 import { CropModal, OcrReviewSheet } from './tooling.jsx';
 
@@ -126,6 +126,16 @@ export default function App() {
           };
         }),
       })));
+    },
+
+    copyFromMachine(targetId, sourceId, opts) {
+      persist((p) => {
+        const src = findMachine(p, sourceId);
+        const tgt = findMachine(p, targetId);
+        if (!src || !tgt) return p;
+        const plan = planCopy(src.machine, tgt.machine);
+        return updateMachineById(p, targetId, (m) => plan.apply(m, opts));
+      });
     },
 
     // Calibração: leitura FRESCA no início e no fim (nunca o valor
@@ -273,6 +283,7 @@ export default function App() {
       case 'addOp': sheet = <AddOperationSheet key={k} machineId={o.machineId} />; break;
       case 'addTool': sheet = <AddToolSheet key={k} opId={o.opId} />; break;
       case 'editOp': sheet = <EditOperationSheet key={k} opId={o.opId} />; break;
+      case 'copyFrom': sheet = <CopyFromSheet key={k} machineId={o.machineId} />; break;
       case 'crop':
         sheet = <CropModal file={o.file} title={o.kind === 'util' ? 'Vida útil (#800–849)' : 'Vida atual (#900–949)'} onConfirm={act.processCrop} onCancel={nav.close} />;
         break;

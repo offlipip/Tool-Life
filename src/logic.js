@@ -77,6 +77,13 @@ export function fmtNum(v) {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
 
+// Desgaste precisa das 2 casas (1.32 ≠ 1.3).
+export function fmtDesg(v) {
+  const n = parseFloat(v);
+  if (isNaN(n)) return '—';
+  return String(Math.round(n * 100) / 100);
+}
+
 export function timeAgo(iso) {
   if (!iso) return null;
   const diff = Date.now() - new Date(iso).getTime();
@@ -148,6 +155,66 @@ export function cloneOperationsForNewMachine(operations) {
     pallet: op.pallet ?? null,
     tools: op.tools.map((t) => ({ ...t, id: genId('tool'), vidaAtual: 0, lastUpdated: null })),
   }));
+}
+
+/* Copiar de outra máquina: casa cada ferramenta pela operação de mesmo
+   nome + slot; se a operação não existir com o mesmo nome, casa só pelo
+   slot (quando ele aparece uma vez só na máquina de origem). */
+const normName = (s) => String(s || '').trim().toLowerCase();
+function calibratedEntries(tool) {
+  const d = tool.desgastePeca;
+  if (!d || typeof d !== 'object') return {};
+  return Object.fromEntries(Object.entries(d).filter(([, v]) => typeof v === 'number' && v > 0));
+}
+export function planCopy(source, target) {
+  const bySlot = {};
+  source.operations.forEach((o) => o.tools.forEach((t) => { (bySlot[t.slot] = bySlot[t.slot] || []).push(t); }));
+  function match(opName, slot) {
+    const so = source.operations.find((o) => normName(o.name) === normName(opName));
+    const t = so?.tools.find((x) => x.slot === slot);
+    if (t) return t;
+    return bySlot[slot]?.length === 1 ? bySlot[slot][0] : null;
+  }
+
+  const desgaste = [];
+  target.operations.forEach((o) => o.tools.forEach((t) => {
+    if (t.isRoutine) return;
+    const src = match(o.name, t.slot);
+    if (!src) return;
+    const entries = calibratedEntries(src);
+    const cur = (t.desgastePeca && typeof t.desgastePeca === 'object') ? t.desgastePeca : {};
+    Object.entries(entries).forEach(([preset, v]) => {
+      if (cur[preset] !== v) desgaste.push({ opId: o.id, toolId: t.id, opName: o.name, slot: t.slot, preset, from: cur[preset] ?? null, to: v });
+    });
+  }));
+
+  const newTools = [];
+  const newOps = [];
+  source.operations.forEach((so) => {
+    const to = target.operations.find((o) => normName(o.name) === normName(so.name));
+    if (!to) { newOps.push(so); so.tools.forEach((t) => newTools.push({ opName: so.name, slot: t.slot, newOp: true })); return; }
+    const have = new Set(to.tools.map((t) => t.slot));
+    so.tools.forEach((t) => { if (!have.has(t.slot)) newTools.push({ opName: so.name, slot: t.slot, opId: to.id, tool: t }); });
+  });
+
+  function apply(machine, { copyDesgaste, copyTools }) {
+    let ops = machine.operations;
+    if (copyDesgaste) {
+      const byTool = {};
+      desgaste.forEach((d) => { (byTool[d.toolId] = byTool[d.toolId] || {})[d.preset] = d.to; });
+      ops = ops.map((o) => ({ ...o, tools: o.tools.map((t) => (byTool[t.id] ? { ...t, desgastePeca: { ...((t.desgastePeca && typeof t.desgastePeca === 'object') ? t.desgastePeca : {}), ...byTool[t.id] } } : t)) }));
+    }
+    if (copyTools) {
+      const clone = (t) => ({ ...t, id: genId('tool'), vidaAtual: 0, lastUpdated: null });
+      ops = ops.map((o) => {
+        const add = newTools.filter((n) => n.opId === o.id).map((n) => clone(n.tool));
+        return add.length ? { ...o, tools: [...o.tools, ...add].sort((a, b) => compareSlots(a.slot, b.slot)) } : o;
+      });
+      ops = [...ops, ...newOps.map((so) => ({ id: genId('op'), name: so.name, pallet: so.pallet ?? null, tools: so.tools.map(clone) }))];
+    }
+    return { ...machine, operations: ops };
+  }
+  return { desgaste, newTools, apply };
 }
 
 /* Anotações: ficam dentro de cada célula; podem citar slots (T02, T03). */

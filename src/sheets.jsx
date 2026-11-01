@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   RotateCcw, SlidersHorizontal, Pencil, Trash2, Bell, StickyNote, Gauge, Timer, ListOrdered, Keyboard,
-  Check, Plus, AlertTriangle, Factory, Undo2,
+  Check, Plus, AlertTriangle, Factory, Undo2, Copy,
 } from 'lucide-react';
 import { C, MONO, SANS, STATUS } from './theme.js';
 import {
@@ -11,7 +11,7 @@ import { PhotoButtons, LimitePhotoButton, NewToolForm, ProgramFoundList, useProg
 import { useApp } from './actions.js';
 import {
   findTool, findMachine, computeRemaining, statusFor, lifePct, getToolDesgaste, isCalibrated, desgasteForPreset,
-  fmtNum, timeAgo, notesForSlot, slotsInCell, genId, compareSlots, cloneOperationsForNewMachine, flattenMachines,
+  fmtNum, timeAgo, notesForSlot, slotsInCell, genId, compareSlots, cloneOperationsForNewMachine, flattenMachines, planCopy, fmtDesg,
 } from './logic.js';
 
 /* ---------------------------------------------------------------------- */
@@ -124,7 +124,7 @@ export function ToolSheet({ opId, toolId }) {
             { label: 'Vida atual', value: fmtNum(tool.vidaAtual) },
             ...(tool.isRoutine ? [] : [{ label: 'Vida útil', value: fmtNum(tool.vidaUtil) }]),
             {
-              label: `Desgaste/pç`, value: fmtNum(getToolDesgaste(tool, preset)),
+              label: `Desgaste/pç`, value: fmtDesg(getToolDesgaste(tool, preset)),
               hint: tool.isRoutine ? null : (calibrated ? `calibrado ${preset}` : 'padrão, não calibrado'),
               hintColor: calibrated ? C.muted : C.warnText,
             },
@@ -707,6 +707,89 @@ export function EditOperationSheet({ opId }) {
         <PalletChips value={pallet} onChange={setPallet} />
         <div style={{ fontSize: 13.5, color: C.muted }}>Com 2 operações na máquina, a outra fica com o outro pallet sozinha.</div>
       </div>
+    </Sheet>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Copiar ferramentas / desgaste calibrado de outra máquina               */
+/* ---------------------------------------------------------------------- */
+
+export function CopyFromSheet({ machineId }) {
+  const { cells, act, nav } = useApp();
+  const target = findMachine(cells, machineId);
+  const sources = flattenMachines(cells).filter(({ machine }) => machine.id !== machineId && machine.operations.length > 0);
+  const [sourceId, setSourceId] = useState(sources.length === 1 ? sources[0].machine.id : null);
+  const [copyTools, setCopyTools] = useState(true);
+  const [copyDesgaste, setCopyDesgaste] = useState(true);
+  const [done, setDone] = useState(null);
+  if (!target) return null;
+  const src = sources.find((s) => s.machine.id === sourceId);
+  const plan = src ? planCopy(src.machine, target.machine) : null;
+  const nothing = plan && plan.newTools.length === 0 && plan.desgaste.length === 0;
+  const willDo = plan && ((copyTools && plan.newTools.length) || (copyDesgaste && plan.desgaste.length));
+
+  if (done) {
+    return (
+      <Sheet title="Cópia feita" subtitle={`${target.cell.name} · ${target.machine.name}`} onClose={nav.close}
+        footer={<Button size="lg" icon={<Check size={22} />} onClick={nav.close}>Fechar</Button>}>
+        <Notice tone="navy" icon={<Check size={20} />}>
+          {done.tools ? `${done.tools} ferramenta${done.tools === 1 ? '' : 's'} copiada${done.tools === 1 ? '' : 's'} (com a vida atual zerada). ` : ''}
+          {done.desg ? `Desgaste calibrado copiado em ${done.desg} ferramenta${done.desg === 1 ? '' : 's'}.` : ''}
+        </Notice>
+      </Sheet>
+    );
+  }
+
+  const byTool = plan ? Array.from(new Set(plan.desgaste.map((d) => d.toolId))).length : 0;
+  return (
+    <Sheet title="Copiar de outra máquina" subtitle={`Para: ${target.cell.name} · ${target.machine.name}`} onClose={nav.close} tall
+      footer={<Button size="lg" disabled={!willDo} icon={<Copy size={22} />}
+        onClick={() => { act.copyFromMachine(machineId, sourceId, { copyTools, copyDesgaste }); setDone({ tools: copyTools ? plan.newTools.length : 0, desg: copyDesgaste ? byTool : 0 }); }}>
+        Copiar
+      </Button>}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.muted }}>Copiar da máquina</div>
+        <ChipRow wrap>
+          {sources.map(({ machine, cellName }) => <Chip key={machine.id} small selected={machine.id === sourceId} onClick={() => setSourceId(machine.id)}>{cellName} · {machine.name}</Chip>)}
+        </ChipRow>
+      </div>
+
+      {plan && nothing && <Notice tone="navy" icon={<Check size={20} />}>Nada pra copiar — as duas máquinas já têm as mesmas ferramentas e o mesmo desgaste.</Notice>}
+
+      {plan && !nothing && (
+        <>
+          <div style={{ background: C.bg, borderRadius: 16, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Checkbox checked={copyTools && plan.newTools.length > 0} onChange={(v) => plan.newTools.length && setCopyTools(v)}>
+              <b>Ferramentas que faltam</b> ({plan.newTools.length})
+            </Checkbox>
+            {plan.newTools.length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, paddingLeft: 34 }}>
+                {plan.newTools.map((n, i) => <Badge key={i} mono tone={n.newOp ? 'warn' : 'navy'}>{n.opName} · {n.slot}</Badge>)}
+              </div>
+            ) : <div style={{ fontSize: 14, color: C.muted, paddingLeft: 34 }}>Todas já existem aqui.</div>}
+            {plan.newTools.some((n) => n.newOp) && <div style={{ fontSize: 13.5, color: C.muted, paddingLeft: 34 }}>Em laranja: operação que ainda não existe aqui — ela é criada junto.</div>}
+            <div style={{ fontSize: 13.5, color: C.muted, paddingLeft: 34 }}>Copia slot, código, vida útil e desgaste. A vida atual começa zerada.</div>
+          </div>
+
+          <div style={{ background: C.bg, borderRadius: 16, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Checkbox checked={copyDesgaste && plan.desgaste.length > 0} onChange={(v) => plan.desgaste.length && setCopyDesgaste(v)}>
+              <b>Desgaste calibrado</b> ({byTool} ferramenta{byTool === 1 ? '' : 's'})
+            </Checkbox>
+            {plan.desgaste.length > 0 ? (
+              <div style={{ paddingLeft: 34 }}>
+                {plan.desgaste.map((d, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center', minHeight: 36, fontFamily: MONO, fontSize: 15, borderBottom: `1px solid ${C.divider}` }}>
+                    <span style={{ width: 46, fontWeight: 600 }}>{d.slot}</span>
+                    <span style={{ flex: 1, color: C.muted }}>{d.opName} · {d.preset}</span>
+                    <span>{d.from === null ? 'padrão' : fmtDesg(d.from)} → <b>{fmtDesg(d.to)}</b></span>
+                  </div>
+                ))}
+              </div>
+            ) : <div style={{ fontSize: 14, color: C.muted, paddingLeft: 34 }}>A outra máquina não tem desgaste calibrado diferente deste.</div>}
+          </div>
+        </>
+      )}
     </Sheet>
   );
 }
