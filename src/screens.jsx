@@ -9,7 +9,7 @@ import { TopBar, IconButton, Button, Chip, ChipRow, Card, SectionTitle, Badge, L
 import { useApp } from './actions.js';
 import { isNativeWithoutShare } from './storage.js';
 import {
-  flattenToolRows, computeRemaining, statusFor, lifePct, compareSlots, notesForSlot, WARNING_MAX, timeAgo,
+  flattenToolRows, computeRemaining, statusFor, lifePct, compareSlots, notesForSlot, WARNING_MAX, timeAgo, fmtNum,
 } from './logic.js';
 
 /* Linha de ferramenta — usada no Início e dentro da célula. Com onReset,
@@ -64,7 +64,14 @@ function ToolLineButton({ tool, preset, subtitle, noteCount, onClick, border }) 
           <span style={{ fontSize: 14.5, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{subtitle}</span>
           {noteCount > 0 && <StickyNote size={16} color={C.navy} aria-label="Tem anotação" style={{ flexShrink: 0 }} />}
         </span>
-        {tool.isRoutine ? <span style={{ fontSize: 13, color: C.muted }}>rotina · sem vida útil</span> : <LifeBar pct={lifePct(tool)} status={status} />}
+        {tool.isRoutine ? <span style={{ fontSize: 13, color: C.muted }}>rotina · contador {fmtNum(tool.vidaAtual)}</span> : (
+          <>
+            <LifeBar pct={lifePct(tool)} status={status} />
+            <span style={{ fontFamily: MONO, fontSize: 13.5, color: C.muted, marginTop: -2 }}>
+              {fmtNum(tool.vidaAtual)} / {fmtNum(tool.vidaUtil)}
+            </span>
+          </>
+        )}
       </span>
       <span style={{ textAlign: 'right', width: 56, flexShrink: 0 }}>
         <span style={{ display: 'block', fontSize: 21, fontWeight: 700, color: S.text, lineHeight: 1.1 }}>{tool.isRoutine || remaining === null ? '—' : remaining}</span>
@@ -368,6 +375,9 @@ export function CellScreen({ cellId }) {
     prevCount.current = n;
   }, [cell?.machines.length]);
 
+  // célula excluída (pela folha de ajustes): sai da tela dela
+  React.useEffect(() => { if (!cell) nav.close(); }, [!cell]);
+
   if (!cell) return null;
   const preset = cell.blockPreset || '6cc';
   const machine = cell.machines.find((m) => m.id === machineId) || cell.machines[0] || null;
@@ -379,9 +389,12 @@ export function CellScreen({ cellId }) {
       <TopBar title={cell.name} subtitle={`Bloco ${preset} · ${cell.machines.length} ${cell.machines.length === 1 ? 'máquina' : 'máquinas'}`} onBack={nav.close}
         actions={<>
           <IconButton label={`Anotações da célula (${noteCount})`} onNavy badge={noteCount || null} onClick={() => nav.push({ type: 'cellNotes', cellId })}><StickyNote size={20} /></IconButton>
-          <IconButton label={editing ? 'Concluir edição' : 'Editar célula'} onNavy active={editing} onClick={() => setEditing((v) => !v)}>
-            {editing ? <Check size={22} /> : <Pencil size={20} />}
-          </IconButton>
+          <IconButton label="Ajustes da célula" onNavy onClick={() => nav.push({ type: 'cellSettings', cellId })}><Settings size={21} /></IconButton>
+          {machine && (
+            <IconButton label={editing ? 'Concluir edição' : `Editar máquina ${machine.name}`} onNavy active={editing} onClick={() => setEditing((v) => !v)}>
+              {editing ? <Check size={22} /> : <Pencil size={20} />}
+            </IconButton>
+          )}
         </>}>
         {(cell.machines.length > 0 || editing) && (
           <div style={{ paddingLeft: 12 }}>
@@ -394,18 +407,6 @@ export function CellScreen({ cellId }) {
       </TopBar>
 
       <div style={{ padding: '16px 16px 0', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {editing && (
-          <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14, border: `1.5px solid ${C.navy}` }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, letterSpacing: '0.04em' }}>EDITANDO A CÉLULA</div>
-            <InlineRename label="Nome da célula" value={cell.name} onSave={(v) => act.renameCell(cellId, v)} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: C.muted }}>Bloco que roda (define o desgaste/peça)</span>
-              <ChipRow>{['4cc', '6cc'].map((p) => <Chip key={p} selected={preset === p} onClick={() => act.setBlockPreset(cellId, p)}>{p === '4cc' ? '4cc • 6509' : '6cc • 6508'}</Chip>)}</ChipRow>
-            </div>
-            <DangerConfirm label="Excluir célula" confirmLabel={`Excluir ${cell.name} e tudo dentro`} onConfirm={() => { act.deleteCell(cellId); nav.close(); }} />
-          </Card>
-        )}
-
         {cell.machines.length === 0 && (
           <EmptyState icon={<Layers size={30} />} title="Nenhuma máquina" text="Cadastre as máquinas desta célula (ex: 6262, 6265)."
             action={<Button icon={<Plus size={20} />} onClick={() => nav.push({ type: 'addMachine', cellId })}>Cadastrar máquina</Button>} />
@@ -414,8 +415,8 @@ export function CellScreen({ cellId }) {
         {machine && (
           <>
             {editing && (
-              <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, letterSpacing: '0.04em' }}>MÁQUINA {machine.name}</div>
+              <Card style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14, border: `1.5px solid ${C.navy}` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, letterSpacing: '0.04em' }}>EDITANDO A MÁQUINA {machine.name}</div>
                 <InlineRename label="Nome da máquina" value={machine.name} onSave={(v) => act.renameMachine(machine.id, v)} />
                 {cells.some((c) => c.machines.some((m) => m.id !== machine.id && m.operations.length > 0)) && (
                   <Button variant="secondary" size="sm" icon={<Copy size={18} />} onClick={() => nav.push({ type: 'copyFrom', machineId: machine.id })}>Copiar de outra máquina</Button>

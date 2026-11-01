@@ -11,7 +11,7 @@ import {
 import { HomeScreen, CellsScreen, CellScreen, NotesScreen, SettingsScreen, BottomNav } from './screens.jsx';
 import {
   ToolSheet, PhotoSheet, ProductionSheet, CalibrationSheet, NoteSheet, AddCellSheet, AddMachineSheet,
-  AddOperationSheet, AddToolSheet, EditOperationSheet, CopyFromSheet,
+  AddOperationSheet, AddToolSheet, EditOperationSheet, CopyFromSheet, CellSettingsSheet,
 } from './sheets.jsx';
 import { CropModal, OcrReviewSheet } from './tooling.jsx';
 
@@ -317,6 +317,7 @@ export default function App() {
       case 'addOp': sheet = <AddOperationSheet key={k} machineId={o.machineId} />; break;
       case 'addTool': sheet = <AddToolSheet key={k} opId={o.opId} />; break;
       case 'editOp': sheet = <EditOperationSheet key={k} opId={o.opId} />; break;
+      case 'cellSettings': sheet = <CellSettingsSheet key={k} cellId={o.cellId} />; break;
       case 'copyFrom': sheet = <CopyFromSheet key={k} machineId={o.machineId} />; break;
       case 'crop':
         sheet = <CropModal file={o.file} title={o.kind === 'util' ? 'Vida útil (#800–849)' : 'Vida atual (#900–949)'} onConfirm={act.processCrop} onCancel={nav.close} />;
@@ -346,6 +347,9 @@ export default function App() {
             onPhoto={() => nav.push({ type: 'photo' })} />
         )}
         {sheet}
+        {/* Faixa fixa atrás da barra de status do celular: sem ela, o
+            conteúdo rolado aparecia por baixo do relógio/bateria. */}
+        <div aria-hidden="true" style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 'env(safe-area-inset-top)', background: C.navy, zIndex: 45, pointerEvents: 'none' }} />
       </div>
     </AppCtx.Provider>
   );

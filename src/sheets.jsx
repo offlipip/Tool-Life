@@ -799,3 +799,41 @@ export function CopyFromSheet({ machineId }) {
     </Sheet>
   );
 }
+
+/* ---------------------------------------------------------------------- */
+/* Ajustes da célula (separado do lápis, que é só da máquina)             */
+/* ---------------------------------------------------------------------- */
+
+export function CellSettingsSheet({ cellId }) {
+  const { cells, act, nav } = useApp();
+  const cell = cells.find((c) => c.id === cellId);
+  const [name, setName] = useState(cell?.name || '');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  if (!cell) return null;
+  const preset = cell.blockPreset || '6cc';
+  const changed = name.trim() && name.trim() !== cell.name;
+  const toolCount = cell.machines.reduce((n, m) => n + m.operations.reduce((k, o) => k + o.tools.length, 0), 0);
+
+  return (
+    <Sheet title="Ajustes da célula" subtitle={cell.name} onClose={nav.close}
+      footer={confirmDelete ? (
+        <>
+          <Button variant="danger" size="lg" icon={<Trash2 size={20} />} onClick={() => { act.deleteCell(cellId); nav.close(); }}>
+            Excluir {cell.name} ({cell.machines.length} máq., {toolCount} ferramentas)
+          </Button>
+          <Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancelar</Button>
+        </>
+      ) : (
+        <Button size="lg" disabled={!changed} icon={<Check size={22} />} onClick={() => { act.renameCell(cellId, name); nav.close(); }}>Salvar nome</Button>
+      )}>
+      <Field label="Nome da célula"><TextInput value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.muted }}>Bloco que roda (define o desgaste/peça)</div>
+        <PresetChips value={preset} onChange={(p) => act.setBlockPreset(cellId, p)} />
+        <div style={{ fontSize: 13.5, color: C.muted }}>Muda na hora. Cada ferramenta guarda o desgaste calibrado de cada bloco.</div>
+      </div>
+      <Button variant="soft" icon={<Plus size={20} />} onClick={() => nav.replaceTop({ type: 'addMachine', cellId })}>Adicionar máquina</Button>
+      {!confirmDelete && <Button variant="dangerSoft" icon={<Trash2 size={18} />} onClick={() => setConfirmDelete(true)}>Excluir célula</Button>}
+    </Sheet>
+  );
+}
