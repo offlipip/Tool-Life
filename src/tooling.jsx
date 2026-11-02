@@ -3,12 +3,23 @@ import { Camera, Image as ImageIcon, Crop as CropIcon, AlertTriangle, RotateCcw,
 import { C, MONO, SANS, SAFE_TOP, SAFE_BOTTOM } from './theme.js';
 import { Button, Field, TextInput, SlotSelect, Checkbox, Sheet, Notice, Badge, Chip, ChipRow } from './ui.jsx';
 import { readPanelPhoto, readProgramPhoto } from './ocr.js';
+import { hasNativeCamera, takeNativePhoto, isCancel } from './camera.js';
 import { genId, desgasteForPreset, slotToLimiteNum, fmtNum } from './logic.js';
 
 /* Dois botões (câmera + galeria) com os <input type=file> escondidos. */
-export function PhotoButtons({ onFile, label = 'Abrir câmera', busy, busyLabel, variant = 'primary', size = 'lg' }) {
+export function PhotoButtons({ onFile, label = 'Abrir câmera', busy, busyLabel, variant = 'primary', size = 'lg', context }) {
   const camRef = useRef(null);
   const galRef = useRef(null);
+  // No apk novo usa a câmera nativa (sobrevive ao Android encerrar o app);
+  // no navegador ou em apk antigo, o seletor de arquivo de sempre.
+  async function openCamera() {
+    if (!hasNativeCamera()) { camRef.current?.click(); return; }
+    try {
+      onFile(await takeNativePhoto(context));
+    } catch (err) {
+      if (!isCancel(err)) camRef.current?.click();
+    }
+  }
   function pick(e) {
     const f = e.target.files?.[0];
     e.target.value = '';
@@ -18,7 +29,7 @@ export function PhotoButtons({ onFile, label = 'Abrir câmera', busy, busyLabel,
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={pick} />
       <input ref={galRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick} />
-      <Button variant={variant} size={size} busy={busy} icon={<Camera size={22} />} onClick={() => camRef.current?.click()}>
+      <Button variant={variant} size={size} busy={busy} icon={<Camera size={22} />} onClick={openCamera}>
         {busy ? (busyLabel || 'Lendo...') : label}
       </Button>
       <Button variant="ghost" size="sm" disabled={busy} icon={<ImageIcon size={18} />} onClick={() => galRef.current?.click()}>
@@ -67,9 +78,11 @@ export function CropModal({ file, title, onConfirm, onCancel }) {
       const sy = (rect.y0 / 100) * img.naturalHeight;
       const sw = ((rect.x1 - rect.x0) / 100) * img.naturalWidth;
       const sh = ((rect.y1 - rect.y0) / 100) * img.naturalHeight;
+      // recorte limitado a 2400px no lado maior (economiza memória)
+      const k = Math.min(1, 2400 / Math.max(sw, sh));
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(sw));
-      canvas.height = Math.max(1, Math.round(sh));
+      canvas.width = Math.max(1, Math.round(sw * k));
+      canvas.height = Math.max(1, Math.round(sh * k));
       canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
       onConfirm(canvas);
     };
@@ -199,10 +212,12 @@ export function OcrReviewSheet({ state, onClose, onRetake, onSave }) {
 
 /* Foto da tela #800-849 lida ANTES de cadastrar: ao escolher o slot, a
    vida útil preenche sozinha. */
-export function LimitePhotoButton({ readings, onReady }) {
+export function LimitePhotoButton({ readings, onReady, context, initialFile }) {
   const [status, setStatus] = useState('idle');
   const [count, setCount] = useState(0);
   const [error, setError] = useState('');
+  // foto recuperada depois do Android encerrar o app
+  React.useEffect(() => { if (initialFile) handle(initialFile); }, [initialFile]);
   async function handle(file) {
     setStatus('loading'); setError('');
     try {
@@ -214,7 +229,7 @@ export function LimitePhotoButton({ readings, onReady }) {
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <PhotoButtons variant="soft" size="md" onFile={handle} busy={status === 'loading'} busyLabel="Lendo vida útil..."
+      <PhotoButtons variant="soft" size="md" onFile={handle} busy={status === 'loading'} busyLabel="Lendo vida útil..." context={context}
         label={readings ? 'Trocar foto da vida útil (#800)' : 'Ler vida útil de uma foto (#800)'} />
       {status === 'ready' && <div style={{ fontSize: 14, color: C.okText }}>{count} valores lidos — ao escolher o slot, a vida útil preenche sozinha.</div>}
       {status === 'error' && <div style={{ fontSize: 14, color: C.critText }}>Não consegui ler essa foto{error ? ` (${error})` : ''}.</div>}
@@ -239,7 +254,7 @@ export function useProgramReader() {
 }
 
 /* Formulário de UMA ferramenta nova. */
-export function NewToolForm({ onAdd, onAddMany, existingSlots, limiteReadings, blockPreset, hideProgramPhoto }) {
+export function NewToolForm({ onAdd, onAddMany, existingSlots, limiteReadings, blockPreset, hideProgramPhoto, programContext, initialProgramFile }) {
   const presetDesgaste = String(desgasteForPreset(blockPreset));
   const blank = { slot: '', bman: '', vidaUtil: '', vidaAtual: '0', desgastePeca: presetDesgaste, isRoutine: false };
   const [t, setT] = useState(blank);
@@ -259,6 +274,9 @@ export function NewToolForm({ onAdd, onAddMany, existingSlots, limiteReadings, b
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t.slot, t.isRoutine, limiteReadings]);
+
+  // foto recuperada depois do Android encerrar o app
+  React.useEffect(() => { if (initialProgramFile) handleProgram(initialProgramFile); }, [initialProgramFile]);
 
   async function handleProgram(file) {
     const found = await program.read(file);
@@ -297,7 +315,7 @@ export function NewToolForm({ onAdd, onAddMany, existingSlots, limiteReadings, b
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, background: C.bg, borderRadius: 16, padding: 14 }}>
       {!hideProgramPhoto && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <PhotoButtons variant="soft" size="md" onFile={handleProgram} busy={program.status === 'loading'} busyLabel="Lendo programa..." label="Ler slot e código do programa" />
+          <PhotoButtons variant="soft" size="md" onFile={handleProgram} busy={program.status === 'loading'} busyLabel="Lendo programa..." label="Ler slot e código do programa" context={programContext} />
           {program.status === 'error' && <div style={{ fontSize: 14, color: C.critText }}>Não reconheci nada nessa foto{program.error ? ` (${program.error})` : ''}.</div>}
           {candidates.length > 0 && (
             <>

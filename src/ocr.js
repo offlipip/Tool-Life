@@ -17,16 +17,37 @@ function hasMlKit() {
   }
 }
 
+// Reduz a foto (no máximo 2400px no lado maior) antes de mandar pro ML
+// Kit: a foto cheia da câmera tem ~10 MB e, virando texto base64, podia
+// estourar a memória do app e fazer ele fechar no meio da leitura.
+const MLKIT_MAX = 2400;
 async function toBase64(input) {
   const isCanvas = typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement;
-  const dataUrl = isCanvas
-    ? input.toDataURL('image/jpeg', 0.92)
-    : await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('read_failed'));
-      reader.readAsDataURL(input);
-    });
+  let src = input;
+  if (!isCanvas) {
+    const url = URL.createObjectURL(input);
+    try {
+      src = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('image_load_failed'));
+        img.src = url;
+      });
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+  }
+  const w = src.naturalWidth || src.width;
+  const h = src.naturalHeight || src.height;
+  const scale = Math.min(1, MLKIT_MAX / Math.max(w, h));
+  let canvas = src;
+  if (!isCanvas || scale < 1) {
+    canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(w * scale));
+    canvas.height = Math.max(1, Math.round(h * scale));
+    canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+  }
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
   return dataUrl.split(',')[1];
 }
 
@@ -98,21 +119,17 @@ function getTextWorker() {
 
 async function loadImageElement(input) {
   const isCanvas = typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement;
-  const dataUrl = isCanvas
-    ? input.toDataURL('image/jpeg', 0.95)
-    : await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('read_failed'));
-      reader.readAsDataURL(input);
+  const url = isCanvas ? input.toDataURL('image/jpeg', 0.95) : URL.createObjectURL(input);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('image_load_failed'));
+      img.src = url;
     });
-
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('image_load_failed'));
-    img.src = dataUrl;
-  });
+  } finally {
+    if (!isCanvas) setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 }
 
 /**

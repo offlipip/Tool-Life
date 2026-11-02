@@ -15,6 +15,7 @@ import {
 } from './sheets.jsx';
 import { CropModal, OcrReviewSheet } from './tooling.jsx';
 import { HelpScreen } from './help.jsx';
+import { readPending, clearPending, base64ToFile } from './camera.js';
 
 const PAGE_TYPES = ['cell', 'cellNotes', 'help'];
 
@@ -24,6 +25,8 @@ export default function App() {
   const [stack, setStack] = useState([]);
   const stackRef = useRef(stack);
   stackRef.current = stack;
+  const cellsRef = useRef(cells);
+  cellsRef.current = cells;
 
   const persist = useCallback((updater) => {
     setCells((prev) => {
@@ -58,6 +61,29 @@ export default function App() {
     CapApp.addListener('backButton', () => {
       if (stackRef.current.length || tabEntryRef.current) window.history.back();
       else CapApp.minimizeApp();
+    }).then((h) => { handle = h; });
+    return () => { handle?.remove(); };
+  }, []);
+
+  // O Android encerrou o app enquanto a câmera estava aberta: o plugin
+  // devolve a foto aqui quando o app reabre. Volta pro lugar onde a foto
+  // foi pedida (guardado antes de abrir a câmera) e continua a leitura.
+  React.useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined;
+    let handle;
+    CapApp.addListener('appRestoredResult', (ev) => {
+      if (ev?.pluginId !== 'Camera' || !ev.success || !ev.data?.base64String) return;
+      const pending = readPending();
+      clearPending();
+      const ctx = pending?.ctx;
+      if (!ctx) return;
+      const file = base64ToFile(ev.data.base64String, ev.data.format);
+      const cell = cellsRef.current.find((c) => c.id === ctx.cellId);
+      if (cell) nav.push({ type: 'cell', cellId: cell.id });
+      if (ctx.type === 'kind') nav.push({ type: 'crop', machineId: ctx.machineId, kind: ctx.kind, file });
+      else if (ctx.type === 'program') nav.push({ type: 'photo', machineId: ctx.machineId, kind: 'programa', opId: ctx.opId, programFile: file });
+      else if (ctx.type === 'addTool') nav.push({ type: 'addTool', opId: ctx.opId, programFile: file });
+      else if (ctx.type === 'addToolLimite') nav.push({ type: 'addTool', opId: ctx.opId, limiteFile: file });
     }).then((h) => { handle = h; });
     return () => { handle?.remove(); };
   }, []);
@@ -310,14 +336,14 @@ export default function App() {
     const k = JSON.stringify({ t: o.type, a: o.opId, b: o.toolId, c: o.cellId, d: o.noteId, e: o.machineId });
     switch (o.type) {
       case 'tool': sheet = <ToolSheet key={k} opId={o.opId} toolId={o.toolId} />; break;
-      case 'photo': sheet = <PhotoSheet key={k} machineId={o.machineId} kind={o.kind} />; break;
+      case 'photo': sheet = <PhotoSheet key={k} machineId={o.machineId} kind={o.kind} opId={o.opId} programFile={o.programFile} />; break;
       case 'production': sheet = <ProductionSheet key={k} machineId={o.machineId} />; break;
       case 'calibration': sheet = <CalibrationSheet key={k} machineId={o.machineId} />; break;
       case 'note': sheet = <NoteSheet key={k} cellId={o.cellId} noteId={o.noteId} presetSlots={o.presetSlots} />; break;
       case 'addCell': sheet = <AddCellSheet key={k} />; break;
       case 'addMachine': sheet = <AddMachineSheet key={k} cellId={o.cellId} />; break;
       case 'addOp': sheet = <AddOperationSheet key={k} machineId={o.machineId} />; break;
-      case 'addTool': sheet = <AddToolSheet key={k} opId={o.opId} />; break;
+      case 'addTool': sheet = <AddToolSheet key={k} opId={o.opId} programFile={o.programFile} limiteFile={o.limiteFile} />; break;
       case 'editOp': sheet = <EditOperationSheet key={k} opId={o.opId} />; break;
       case 'cellSettings': sheet = <CellSettingsSheet key={k} cellId={o.cellId} />; break;
       case 'copyFrom': sheet = <CopyFromSheet key={k} machineId={o.machineId} />; break;

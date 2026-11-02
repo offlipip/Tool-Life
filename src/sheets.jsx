@@ -205,16 +205,18 @@ const KINDS = [
   { id: 'manual', icon: <Keyboard size={26} />, title: 'Digitar na mão', text: 'Sem foto: você preenche os valores da vida atual' },
 ];
 
-export function PhotoSheet({ machineId: initialMachine, kind: initialKind }) {
+export function PhotoSheet({ machineId: initialMachine, kind: initialKind, opId: initialOp, programFile }) {
   const { cells, act, nav } = useApp();
   const machines = flattenMachines(cells);
   const [machineId, setMachineId] = useState(initialMachine || (machines.length === 1 ? machines[0].machine.id : null));
   const [kind, setKind] = useState(initialKind || 'atual');
-  const [opId, setOpId] = useState(null);
+  const [opId, setOpId] = useState(initialOp || null);
   const [found, setFound] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const [added, setAdded] = useState(null);
   const program = useProgramReader();
+  // foto do programa recuperada depois do Android encerrar o app
+  React.useEffect(() => { if (programFile) onProgramFile(programFile); }, [programFile]);
 
   const fm = machineId ? findMachine(cells, machineId) : null;
   const ops = fm ? fm.machine.operations : [];
@@ -292,12 +294,13 @@ export function PhotoSheet({ machineId: initialMachine, kind: initialKind }) {
     } else if (kind === 'programa') {
       footer = (
         <>
-          <PhotoButtons onFile={onProgramFile} busy={program.status === 'loading'} busyLabel="Lendo programa..." />
+          <PhotoButtons onFile={onProgramFile} busy={program.status === 'loading'} busyLabel="Lendo programa..."
+            context={{ type: 'program', cellId: fm.cell.id, machineId, opId: effectiveOpId }} />
           {program.status === 'error' && <div style={{ fontSize: 14, color: C.critText, textAlign: 'center' }}>Não reconheci nada{program.error ? ` (${program.error})` : ''}. Tente outra foto.</div>}
         </>
       );
     } else {
-      footer = <PhotoButtons onFile={(f) => act.startPhotoRead(machineId, kind, f)} />;
+      footer = <PhotoButtons onFile={(f) => act.startPhotoRead(machineId, kind, f)} context={{ type: 'kind', cellId: fm.cell.id, machineId, kind }} />;
     }
   }
 
@@ -668,7 +671,7 @@ export function AddOperationSheet({ machineId }) {
   );
 }
 
-export function AddToolSheet({ opId }) {
+export function AddToolSheet({ opId, programFile, limiteFile }) {
   const { cells, act, nav } = useApp();
   const [limite, setLimite] = useState(null);
   const [added, setAdded] = useState([]);
@@ -680,8 +683,9 @@ export function AddToolSheet({ opId }) {
     <Sheet title="Nova ferramenta" subtitle={`${ctx.cell.name} · ${ctx.machine.name} · ${ctx.op.name}`} onClose={nav.close} tall
       footer={<Button size="lg" variant={added.length ? 'primary' : 'secondary'} icon={<Check size={22} />} onClick={nav.close}>{added.length ? 'Concluir' : 'Fechar'}</Button>}>
       {added.length > 0 && <Notice tone="navy" icon={<Check size={20} />}>Adicionadas agora: {added.join(', ')}</Notice>}
-      <LimitePhotoButton readings={limite} onReady={setLimite} />
+      <LimitePhotoButton readings={limite} onReady={setLimite} initialFile={limiteFile} context={{ type: 'addToolLimite', cellId: ctx.cell.id, opId }} />
       <NewToolForm limiteReadings={limite} blockPreset={preset} existingSlots={new Set(ctx.op.tools.map((t) => t.slot))}
+        programContext={{ type: 'addTool', cellId: ctx.cell.id, opId }} initialProgramFile={programFile}
         onAdd={(t) => { act.addTool(opId, t); setAdded((p) => [...p, t.slot]); }}
         onAddMany={(list) => { act.addTools(opId, list); setAdded((p) => [...p, ...list.map((t) => t.slot)]); }} />
     </Sheet>
